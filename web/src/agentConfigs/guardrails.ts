@@ -1,4 +1,3 @@
-import { zodTextFormat } from 'openai/helpers/zod';
 import { GuardrailOutputZod, GuardrailOutput } from '@/types';
 
 export async function runGuardrailClassifier(
@@ -28,18 +27,10 @@ export async function runGuardrailClassifier(
     },
   ];
 
-  const response = await fetch('/api/responses', {
+  const response = await fetch('/api/moderate', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: 'gpt-4o-mini',
-      input: messages,
-      text: {
-        format: zodTextFormat(GuardrailOutputZod, 'output_format'),
-      },
-    }),
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text: message }),
   });
 
   if (!response.ok) {
@@ -48,20 +39,15 @@ export async function runGuardrailClassifier(
   }
 
   const data = await response.json();
-
-  try {
-    const output = GuardrailOutputZod.parse(data.output_parsed);
-    return {
-      ...output,
-      testText: message,
-    };
-  } catch (error) {
-    console.error(
-      'Error parsing the message content as GuardrailOutput:',
-      error
-    );
-    return Promise.reject('Failed to parse guardrail output.');
-  }
+  // Map simple moderation decision to GuardrailOutput
+  const flagged = data?.allowed === false;
+  const category = flagged ? 'OFFENSIVE' : 'NONE';
+  const output = {
+    moderationRationale: 'server-moderation',
+    moderationCategory: category,
+    testText: message,
+  };
+  return GuardrailOutputZod.parse(output);
 }
 
 export interface RealtimeOutputGuardrailResult {

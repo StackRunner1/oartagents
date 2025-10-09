@@ -11,7 +11,6 @@ from fastapi import APIRouter, Body, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from . import sdk_manager
-from .agent_runner import AgentRunnerError, run_single_turn
 from .core.models.event import Event
 from .core.store.memory_store import store
 from .registry import get_scenario, list_scenarios
@@ -40,6 +39,8 @@ async def scenarios_endpoint():
         ScenarioListItem(id=s.id, label=s.label, description=s.description)
         for s in list_scenarios()
     ]
+
+# Provider toggles removed entirely; no stub endpoints retained.
 
 
 @router.get("/scenarios/{scenario_id}")
@@ -277,7 +278,7 @@ async def context_snapshot(req: ContextSnapshotRequest):
 # ---- Moderation Endpoint ----
 @router.post("/moderate", response_model=ModerationDecision)
 async def moderate(req: ModerationRequest):
-    # Minimal heuristic placeholder; replace with Responses API call
+    # Minimal heuristic placeholder moderation on server
     lowered = req.text.lower()
     flagged = any(term in lowered for term in ["forbidden", "banned"])
     sanitized = req.text.replace("forbidden", "[redacted]") if flagged else req.text
@@ -317,20 +318,7 @@ async def orchestrate(req: OrchestrationRequest):
         )
 
 
-# ---- Server-side Agent Single Turn (Responses API) ----
-class AgentRunRequest(BaseModel):
-    model: str
-    messages: list[dict]
-    tools: list[dict] | None = None
-
-
-@router.post("/agent/run")
-async def agent_run(req: AgentRunRequest):
-    try:
-        resp = await run_single_turn(req.model, req.messages, req.tools)
-        return resp
-    except AgentRunnerError as e:
-        raise HTTPException(status_code=502, detail=str(e))
+# Removed server-side /agent/run endpoint that proxied to Responses API
 
 
 # ---- Agents SDK Session Endpoints ----
@@ -553,54 +541,7 @@ async def get_session_usage(session_id: str = Query(...)):
         raise HTTPException(status_code=500, detail=f"usage retrieval failed: {e}")
 
 
-# Providers status (OpenAIResponses, LiteLLM)
-class ProvidersStatus(BaseModel):
-    openai_responses: bool
-    litellm: bool
-
-
-@router.get("/models/providers/status", response_model=ProvidersStatus)
-async def providers_status():
-    try:
-        from .sdk_manager import (LiteLLMModel,  # type: ignore
-                                  OpenAIResponsesModel)
-
-        return ProvidersStatus(
-            openai_responses=OpenAIResponsesModel is not None,
-            litellm=LiteLLMModel is not None,
-        )
-    except Exception:
-        return ProvidersStatus(openai_responses=False, litellm=False)
-
-
-class ProviderFlags(BaseModel):
-    use_openai_responses: bool
-    use_litellm: bool
-
-
-@router.get("/models/providers/flags", response_model=ProviderFlags)
-async def get_provider_flags():
-    try:
-        from . import sdk_manager as sm
-
-        return ProviderFlags(
-            use_openai_responses=bool(getattr(sm, "USE_OA_RESPONSES_MODEL", False)),
-            use_litellm=bool(getattr(sm, "USE_LITELLM", False)),
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"flags retrieval failed: {e}")
-
-
-@router.post("/models/providers/flags", response_model=ProviderFlags)
-async def set_provider_flags(flags: ProviderFlags):
-    try:
-        from . import sdk_manager as sm
-
-        setattr(sm, "USE_OA_RESPONSES_MODEL", bool(flags.use_openai_responses))
-        setattr(sm, "USE_LITELLM", bool(flags.use_litellm))
-        return await get_provider_flags()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"flags update failed: {e}")
+# Removed provider status/flags endpoints (OpenAI Responses + LiteLLM)
 
 
 # ---- Events Resume (M1 scaffold) ----

@@ -1,4 +1,4 @@
-import { RealtimeItem, tool } from '@openai/agents/realtime';
+import { tool } from '@openai/agents/realtime';
 
 // Minimal sample data placeholders
 const exampleAccountInfo = { account_id: 'ACC-123', balance_usd: 42.5 };
@@ -52,15 +52,7 @@ export const supervisorAgentTools = [
   },
 ];
 
-async function fetchResponsesMessage(body: any) {
-  const response = await fetch('/api/responses', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ...body, parallel_tool_calls: false }),
-  });
-  if (!response.ok) return { error: 'Something went wrong.' };
-  return response.json();
-}
+// Removed server-side /api/responses usage
 
 function getToolResponse(name: string) {
   switch (name) {
@@ -75,53 +67,7 @@ function getToolResponse(name: string) {
   }
 }
 
-async function handleToolCalls(
-  body: any,
-  response: any,
-  addBreadcrumb?: (title: string, data?: any) => void
-) {
-  let current = response;
-  while (true) {
-    if (current?.error) return { error: 'Something went wrong.' };
-    const output: any[] = current.output ?? [];
-    const functionCalls = output.filter((i) => i.type === 'function_call');
-    if (functionCalls.length === 0) {
-      const assistantMessages = output.filter((i) => i.type === 'message');
-      const final = assistantMessages
-        .map((m: any) =>
-          (m.content ?? [])
-            .filter((c: any) => c.type === 'output_text')
-            .map((c: any) => c.text)
-            .join('')
-        )
-        .join('\n');
-      return final;
-    }
-    for (const fc of functionCalls) {
-      const args = JSON.parse(fc.arguments || '{}');
-      const toolRes = getToolResponse(fc.name);
-      addBreadcrumb?.(`[supervisorAgent] function call: ${fc.name}`, args);
-      addBreadcrumb?.(
-        `[supervisorAgent] function call result: ${fc.name}`,
-        toolRes
-      );
-      body.input.push(
-        {
-          type: 'function_call',
-          call_id: fc.call_id,
-          name: fc.name,
-          arguments: fc.arguments,
-        },
-        {
-          type: 'function_call_output',
-          call_id: fc.call_id,
-          output: JSON.stringify(toolRes),
-        }
-      );
-    }
-    current = await fetchResponsesMessage(body);
-  }
-}
+// Removed tool call loop using Responses API
 
 export const getNextResponseFromSupervisor = tool({
   name: 'getNextResponseFromSupervisor',
@@ -145,32 +91,9 @@ export const getNextResponseFromSupervisor = tool({
     const addBreadcrumb = (details?.context as any)?.addTranscriptBreadcrumb as
       | ((title: string, data?: any) => void)
       | undefined;
-    const history: RealtimeItem[] = (details?.context as any)?.history ?? [];
-    const filteredLogs = history.filter((h) => h.type === 'message');
-
-    const body: any = {
-      model: 'gpt-4.1',
-      input: [
-        {
-          type: 'message',
-          role: 'system',
-          content: supervisorAgentInstructions,
-        },
-        {
-          type: 'message',
-          role: 'user',
-          content: `History: ${JSON.stringify(
-            filteredLogs
-          )}\nLast: ${relevantContextFromLastUserMessage}`,
-        },
-      ],
-      tools: supervisorAgentTools,
+    // Defer to backend orchestration; as a placeholder, echo the hint
+    return {
+      nextResponse: `Supervisor hint: ${relevantContextFromLastUserMessage}`,
     };
-
-    const response = await fetchResponsesMessage(body);
-    if (response.error) return { error: 'Something went wrong.' };
-    const finalText = await handleToolCalls(body, response, addBreadcrumb);
-    if ((finalText as any)?.error) return { error: 'Something went wrong.' };
-    return { nextResponse: finalText as string };
   },
 });

@@ -2,26 +2,47 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any, Dict
+from agents.agent import Agent
+from agents.tool import function_tool
+from agents.run import Runner
+from agents.computer import ComputerTool  # may be available; keep optional tools below guarded
+from agents.memory.sqlite_session import SQLiteSession
 
-from agents import Agent, ModelSettings, Runner, SQLiteSession, function_tool
+# Built-in tools are optional; import from known extension modules when available
+try:
+    from agents.extensions.web_search import WebSearchTool  # type: ignore
+except Exception:
+    WebSearchTool = None  # type: ignore
+try:
+    from agents.extensions.file_search import FileSearchTool  # type: ignore
+except Exception:
+    FileSearchTool = None  # type: ignore
+try:
+    from agents.extensions.mcp import HostedMCPTool  # type: ignore
+except Exception:
+    HostedMCPTool = None  # type: ignore
+try:
+    from agents.extensions.local_shell import LocalShellTool  # type: ignore
+except Exception:
+    LocalShellTool = None  # type: ignore
+try:
+    from agents.extensions.image_generation import ImageGenerationTool  # type: ignore
+except Exception:
+    ImageGenerationTool = None  # type: ignore
+try:
+    from agents.extensions.code_interpreter import CodeInterpreterTool  # type: ignore
+except Exception:
+    CodeInterpreterTool = None  # type: ignore
 
-try:
-    # Built-in tools (may not all be available or desired)
-    from agents import (CodeInterpreterTool, ComputerTool,  # type: ignore
-                        FileSearchTool, HostedMCPTool, ImageGenerationTool,
-                        LocalShellTool, WebSearchTool)
-except Exception:  # pragma: no cover - optional
-    FileSearchTool = WebSearchTool = ComputerTool = HostedMCPTool = LocalShellTool = ImageGenerationTool = CodeInterpreterTool = None  # type: ignore
-try:
-    # Optional model providers
-    from agents.models.openai_responses import \
-        OpenAIResponsesModel  # type: ignore
-except Exception:  # pragma: no cover
-    OpenAIResponsesModel = None  # type: ignore
-try:
-    from agents.extensions.litellm import LiteLLMModel  # type: ignore
-except Exception:  # pragma: no cover
-    LiteLLMModel = None  # type: ignore
+TOOLS_CLASS_MAP: Dict[str, Any] = {
+    "FileSearchTool": FileSearchTool,
+    "WebSearchTool": WebSearchTool,
+    "ComputerTool": ComputerTool,
+    "HostedMCPTool": HostedMCPTool,
+    "LocalShellTool": LocalShellTool,
+    "ImageGenerationTool": ImageGenerationTool,
+    "CodeInterpreterTool": CodeInterpreterTool,
+}
 import time
 
 from .core.models.event import Event
@@ -74,16 +95,7 @@ def _resolve_agent_tools(names: list[str]):
             key = "CodeInterpreterTool"
         if not BUILTIN_TOOLS_ENABLED.get(key, False):
             return None
-        cls_map = {
-            "FileSearchTool": FileSearchTool,
-            "WebSearchTool": WebSearchTool,
-            "ComputerTool": ComputerTool,
-            "HostedMCPTool": HostedMCPTool,
-            "LocalShellTool": LocalShellTool,
-            "ImageGenerationTool": ImageGenerationTool,
-            "CodeInterpreterTool": CodeInterpreterTool,
-        }
-        cls = cls_map.get(key)
+        cls = TOOLS_CLASS_MAP.get(key)
         if cls is None:
             return None
         try:
@@ -114,26 +126,8 @@ def _resolve_agent_tools(names: list[str]):
     return tools
 
 
-# Runtime-toggleable provider flags (reflected via router endpoints)
-USE_LITELLM: bool = False
-USE_OA_RESPONSES_MODEL: bool = True
-
-
+# Always use plain model string; remove LiteLLM and OpenAI Responses adapters.
 def _build_model_provider(model_name: str):
-    """Optionally wrap model with OpenAI Responses adapter or LiteLLM.
-
-    Default is the raw model string.
-    """
-    if USE_LITELLM and LiteLLMModel is not None:
-        try:
-            return LiteLLMModel(model_name)
-        except Exception:
-            pass
-    if USE_OA_RESPONSES_MODEL and OpenAIResponsesModel is not None:
-        try:
-            return OpenAIResponsesModel(model_name)
-        except Exception:
-            pass
     return model_name
 
 
@@ -207,20 +201,7 @@ async def create_agent_session(
         instr = instructions
 
     prov = _build_model_provider(model)
-    ms = None
-    try:
-        # Enable usage for LiteLLM if used
-        if prov.__class__.__name__ == "LitellmModel":  # type: ignore[attr-defined]
-            ms = ModelSettings(include_usage=True)
-    except Exception:
-        pass
-    # Only pass model_settings if present; Agents SDK raises TypeError on None
-    if ms is not None:
-        agent = Agent(
-            name=name, instructions=instr, model=prov, tools=tools, model_settings=ms
-        )
-    else:
-        agent = Agent(name=name, instructions=instr, model=prov, tools=tools)
+    agent = Agent(name=name, instructions=instr, model=prov, tools=tools)
     # Optionally run a priming turn (not required)
     return {
         "session_id": session_id,
@@ -265,18 +246,7 @@ async def run_agent_turn(
     except Exception:
         instr = base_instr
     prov = _build_model_provider(agent_spec.get("model", "gpt-4.1-mini"))
-    ms = None
-    try:
-        if prov.__class__.__name__ == "LitellmModel":  # type: ignore[attr-defined]
-            ms = ModelSettings(include_usage=True)
-    except Exception:
-        pass
-    if ms is not None:
-        agent = Agent(
-            name=name, instructions=instr, model=prov, tools=tools, model_settings=ms
-        )
-    else:
-        agent = Agent(name=name, instructions=instr, model=prov, tools=tools)
+    agent = Agent(name=name, instructions=instr, model=prov, tools=tools)
     result = await Runner.run(agent, user_input, session=session)
     # Emit tool_call/tool_result events opportunistically
     try:
@@ -435,78 +405,8 @@ async def run_supervisor_orchestrate(
                 pass
         return {"chosen_root": chosen, "reason": reason, "changed": changed}
 
-    # Build supervisor with a `handoff` function tool
-    decision: Dict[str, Any] = {"target": sc.default_root, "reason": "no_call"}
-    try:
-
-        def handoff(target: str, reason: str | None = None):
-            nonlocal decision
-            valid = {a.name for a in sc.agents}
-            if target not in valid:
-                decision = {
-                    "target": decision.get("target", sc.default_root),
-                    "reason": f"invalid_target:{target}",
-                }
-            else:
-                decision = {"target": target, "reason": reason or "supervisor_choice"}
-            return {"ok": True, **decision}
-
-        handoff_tool = function_tool(
-            handoff,
-            name="handoff",
-            description="Select the best agent to handle the user.",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "target": {
-                        "type": "string",
-                        "description": "Agent name to activate",
-                    },
-                    "reason": {"type": "string"},
-                },
-                "required": ["target"],
-            },
-        )
-
-        # Apply model provider
-        prov = _build_model_provider(sup.model)
-        ms = None
-        try:
-            if prov.__class__.__name__ == "LitellmModel":  # type: ignore[attr-defined]
-                ms = ModelSettings(include_usage=True)
-        except Exception:
-            pass
-
-        instr = sup.instructions
-        try:
-            from agents.extensions.handoff_prompt import \
-                prompt_with_handoff_instructions  # type: ignore
-
-            instr = prompt_with_handoff_instructions(instr)
-        except Exception:
-            pass
-
-        if ms is not None:
-            supervisor = Agent(
-                name=sup.name,
-                instructions=instr,
-                model=prov,
-                tools=[handoff_tool],
-                model_settings=ms,
-            )
-        else:
-            supervisor = Agent(
-                name=sup.name, instructions=instr, model=prov, tools=[handoff_tool]
-            )
-        session = get_or_create_session(session_id or f"sup-{sc.id}")
-        try:
-            await Runner.run(supervisor, last_user_text or "", session=session)
-        except Exception:
-            # Non-fatal: fall back to heuristic below
-            pass
-    except Exception:
-        # Entire supervisor setup failed; fall back
-        pass
+    # Supervisor dynamic orchestration disabled in this build; use default root.
+    decision: Dict[str, Any] = {"target": sc.default_root, "reason": "supervisor_disabled"}
 
     chosen = decision.get("target", sc.default_root)
     reason = decision.get("reason", "supervisor_default")

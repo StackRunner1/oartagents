@@ -7,7 +7,6 @@ import { RealtimePanel } from './components/app_agents/RealtimePanel';
 import { ChatPanel } from './components/app_agents/ChatPanel';
 import { RawEventsPanel } from './components/app_agents/RawEventsPanel';
 import { UsagePanel } from './components/app_agents/UsagePanel';
-import { ProvidersStatusPanel } from './components/app_agents/ProvidersStatusPanel';
 import { useEvents } from './hooks/useEvents';
 
 export default function SDKTestStandalone() {
@@ -380,7 +379,6 @@ export default function SDKTestStandalone() {
             onError={(msg) => setError(msg || null)}
           />
           <UsagePanel baseUrl={baseUrl} sessionId={sessionId} />
-          <ProvidersStatusPanel baseUrl={baseUrl} />
           {/* (Legacy microphone panel removed – mic control lives only in Voice Chat panel) */}
         </div>
 
