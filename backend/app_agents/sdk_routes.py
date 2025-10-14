@@ -556,66 +556,27 @@ async def visualize_agents(req: VizRequest):
                     dot_src = str(g)
             except Exception:
                 dot_src = None
-            # Continue with PNG path too if available; frontend can prefer DOT if needed
-            # but at least the caller gets the DOT to verify/inspect elsewhere.
             dot_payload = {"dot_source": dot_src}
         else:
             dot_payload = {}
-        # Graphviz Digraph has .pipe to get bytes when format is set
+        # Prefer SVG for crisp scaling; fallback to PNG
         try:
-            g.format = "png"  # type: ignore[attr-defined]
-            png_bytes = g.pipe(format="png")  # type: ignore[call-arg]
-            payload = base64.b64encode(png_bytes).decode("ascii")
+            g.format = "svg"  # type: ignore[attr-defined]
+            svg_bytes = g.pipe(format="svg")  # type: ignore[call-arg]
+            payload = base64.b64encode(svg_bytes).decode("ascii")
             return JSONResponse(
                 {
                     "ok": True,
-                    "format": "png",
+                    "format": "svg",
                     "image_base64": payload,
                     **dot_payload,
                 }
             )
-        except Exception as e1:
-            # Fallback: try saving to a temp file and re-open
-            fname = (req.filename or "agent_graph") + ".png"
+        except Exception as e_svg:
             try:
-                g.render(filename=req.filename or "agent_graph", format="png", cleanup=True)  # type: ignore[call-arg]
-            except Exception as e2:
-                # Write DOT source to a safe path for troubleshooting (usually missing Graphviz system binaries)
-                try:
-                    import os
-                    from uuid import uuid4 as _uuid4
-
-                    backend_dir = os.path.dirname(os.path.dirname(__file__))
-                    out_root = os.path.join(backend_dir, "agent_graph_out")
-                    # If a file exists with this name, fallback to backend_dir
-                    if os.path.exists(out_root) and not os.path.isdir(out_root):
-                        out_root = backend_dir
-                    os.makedirs(out_root, exist_ok=True)
-                    dot_path = os.path.join(out_root, f"agent_graph_{_uuid4().hex}.dot")
-                    # graphviz.Digraph exposes 'source'
-                    dot_src = getattr(g, "source", None)
-                    if not isinstance(dot_src, str):
-                        try:
-                            dot_src = str(g)
-                        except Exception:
-                            dot_src = "// (no source available)"
-                    with open(dot_path, "w", encoding="utf-8") as f:
-                        f.write(dot_src or "")
-                    # Try to include discovered dot path in hint
-                    dot_hint = os.environ.get("GRAPHVIZ_DOT") or "dot (not found)"
-                    hint = (
-                        f"viz render failed: {e2}; wrote DOT to {dot_path}. "
-                        f"Set GRAPHVIZ_DOT to a valid dot.exe or install Graphviz and add it to PATH. Using: {dot_hint}"
-                    )
-                except Exception as ewrite:
-                    hint = f"viz render failed: {e2}; additionally failed to write DOT: {ewrite}"
-                return JSONResponse(
-                    {"ok": False, "error": hint},
-                    status_code=200,
-                )
-            try:
-                with open(fname, "rb") as f:
-                    payload = base64.b64encode(f.read()).decode("ascii")
+                g.format = "png"  # type: ignore[attr-defined]
+                png_bytes = g.pipe(format="png")  # type: ignore[call-arg]
+                payload = base64.b64encode(png_bytes).decode("ascii")
                 return JSONResponse(
                     {
                         "ok": True,
@@ -624,11 +585,60 @@ async def visualize_agents(req: VizRequest):
                         **dot_payload,
                     }
                 )
-            except Exception as e3:
-                return JSONResponse(
-                    {"ok": False, "error": f"viz read failed: {e3}"},
-                    status_code=200,
-                )
+            except Exception as e1:
+                # Fallback: try saving to a temp file and re-open
+                fname = (req.filename or "agent_graph") + ".png"
+                try:
+                    g.render(filename=req.filename or "agent_graph", format="png", cleanup=True)  # type: ignore[call-arg]
+                except Exception as e2:
+                    # Write DOT source to a safe path for troubleshooting (usually missing Graphviz system binaries)
+                    try:
+                        import os
+                        from uuid import uuid4 as _uuid4
+
+                        backend_dir = os.path.dirname(os.path.dirname(__file__))
+                        out_root = os.path.join(backend_dir, "agent_graph_out")
+                        # If a file exists with this name, fallback to backend_dir
+                        if os.path.exists(out_root) and not os.path.isdir(out_root):
+                            out_root = backend_dir
+                        os.makedirs(out_root, exist_ok=True)
+                        dot_path = os.path.join(
+                            out_root, f"agent_graph_{_uuid4().hex}.dot"
+                        )
+                        # graphviz.Digraph exposes 'source'
+                        dot_src = getattr(g, "source", None)
+                        if not isinstance(dot_src, str):
+                            try:
+                                dot_src = str(g)
+                            except Exception:
+                                dot_src = "// (no source available)"
+                        with open(dot_path, "w", encoding="utf-8") as f:
+                            f.write(dot_src or "")
+                        # Try to include discovered dot path in hint
+                        dot_hint = os.environ.get("GRAPHVIZ_DOT") or "dot (not found)"
+                        hint = (
+                            f"viz render failed: {e2}; wrote DOT to {dot_path}. "
+                            f"Set GRAPHVIZ_DOT to a valid dot.exe or install Graphviz and add it to PATH. Using: {dot_hint}"
+                        )
+                    except Exception as ewrite:
+                        hint = f"viz render failed: {e2}; additionally failed to write DOT: {ewrite}"
+                    return JSONResponse({"ok": False, "error": hint}, status_code=200)
+                try:
+                    with open(fname, "rb") as f:
+                        payload = base64.b64encode(f.read()).decode("ascii")
+                    return JSONResponse(
+                        {
+                            "ok": True,
+                            "format": "png",
+                            "image_base64": payload,
+                            **dot_payload,
+                        }
+                    )
+                except Exception as e3:
+                    return JSONResponse(
+                        {"ok": False, "error": f"viz read failed: {e3}"},
+                        status_code=200,
+                    )
     except HTTPException:
         raise
     except Exception as e:

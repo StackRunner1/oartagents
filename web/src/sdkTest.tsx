@@ -387,11 +387,37 @@ export default function SDKTestStandalone() {
     { id: string; from: string; to: string; reason: string; at: string }[]
   >([]);
 
+  async function applyHandoff(targetAgent: string) {
+    try {
+      if (!sessionId) return;
+      const r = await fetch(`${baseUrl}/api/sdk/session/set_active_agent`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          session_id: sessionId,
+          agent_name: targetAgent,
+        }),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      // Update local active agent immediately
+      setActiveAgentId(targetAgent.toLowerCase());
+      // Refresh events so the server-side handoff event appears
+      void refresh();
+    } catch (e) {
+      console.warn('applyHandoff failed', e);
+    }
+  }
+
+  function dismissHandoff(id: string) {
+    // Remove from local timeline only (server events remain for audit)
+    setHandoffEvents((evts) => evts.filter((e) => e.id !== id));
+  }
+
   return (
     <div className="min-h-screen bg-gray-950 text-gray-100 p-6 font-sans">
-      <div className="max-w-7xl mx-auto grid grid-cols-1 xl:grid-cols-4 gap-6 transition-all">
+      <div className="max-w-[1600px] mx-auto grid grid-cols-1 xl:grid-cols-5 gap-6 transition-all">
         {/* Full-width header */}
-        <div className="xl:col-span-4">
+        <div className="xl:col-span-5">
           <PageHeader
             title="OA Agents SDK"
             subtitle="Realtime and multi-turn chat demo"
@@ -399,7 +425,7 @@ export default function SDKTestStandalone() {
         </div>
 
         {/* Left column: Session, Agent, Tools, Usage, Logs toggle */}
-        <div className="space-y-4 lg:col-span-1">
+        <div className="space-y-4 xl:col-span-1">
           <section className="bg-gray-900/70 border border-gray-800 rounded-lg">
             <div className="px-4 py-2 border-b border-gray-800 flex items-center justify-between">
               <h2 className="text-sm font-semibold text-teal-300">Session</h2>
@@ -481,12 +507,6 @@ export default function SDKTestStandalone() {
             enabled={!!sessionId && chatStarted}
           />
 
-          <AgentGraphPanel
-            baseUrl={baseUrl}
-            scenarioId={'default'}
-            rootAgent={activeAgent.name}
-          />
-
           <button
             onClick={() => setShowLogs((v) => !v)}
             className="w-full text-left text-[11px] px-2 py-1 rounded border border-gray-700 hover:bg-gray-800 text-gray-300">
@@ -494,7 +514,7 @@ export default function SDKTestStandalone() {
           </button>
         </div>
 
-        {/* Middle column: Realtime + Chat */}
+        {/* Middle column: Realtime + Chat (center) */}
         <div className="xl:col-span-2 flex flex-col gap-6">
           <RealtimePanel
             status={realtime.status}
@@ -526,7 +546,63 @@ export default function SDKTestStandalone() {
             handoffEvents={handoffEvents}
           />
 
-          {/* Dedicated Tool Calls panel */}
+          {/* Handoff actions (moved directly below Chat) */}
+          {handoffEvents.length > 0 && (
+            <section className="bg-gray-900/70 border border-gray-800 rounded-lg p-4">
+              <div className="flex items-center justify-between mb-2">
+                <h2 className="text-sm font-semibold text-indigo-300">
+                  Handoff Actions
+                </h2>
+                <span className="text-[10px] text-gray-500">
+                  {handoffEvents.length} suggestion
+                  {handoffEvents.length > 1 ? 's' : ''}
+                </span>
+              </div>
+              <ul className="space-y-2">
+                {handoffEvents.map((h) => (
+                  <li
+                    key={h.id}
+                    className="flex items-center justify-between bg-gray-950 border border-gray-800 rounded p-2">
+                    <div className="text-[12px] text-indigo-100">
+                      <span className="font-semibold">{h.from}</span> →{' '}
+                      <span className="font-semibold">{h.to}</span>
+                      {h.reason ? (
+                        <span className="opacity-80"> — {h.reason}</span>
+                      ) : null}
+                      {h.at ? (
+                        <span className="ml-2 text-[10px] opacity-60">
+                          [{new Date(h.at).toLocaleTimeString()}]
+                        </span>
+                      ) : null}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => applyHandoff(h.to)}
+                        className="text-[11px] px-2 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white">
+                        Apply
+                      </button>
+                      <button
+                        onClick={() => dismissHandoff(h.id)}
+                        className="text-[11px] px-2 py-1 rounded border border-gray-700 hover:bg-gray-800 text-gray-300">
+                        Dismiss
+                      </button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+        </div>
+
+        {/* Right column: Agent Graph on top, Tool Calls below (keep width; page widened) */}
+        <div className="xl:col-span-2 flex flex-col gap-6">
+          <AgentGraphPanel
+            baseUrl={baseUrl}
+            scenarioId={'default'}
+            rootAgent={activeAgent.name}
+            containerClassName="h-[520px]"
+          />
+
           <section className="bg-gray-900/70 border border-gray-800 rounded-lg p-4">
             <div className="flex items-center justify-between mb-2">
               <h2 className="text-sm font-semibold text-indigo-300">
@@ -576,44 +652,44 @@ export default function SDKTestStandalone() {
               </ul>
             )}
           </section>
-
-          {/* Final Output panel hidden for now */}
-          {false && output && (
-            <section className="bg-gray-900/70 border border-gray-800 rounded-lg p-4">
-              <h2 className="text-sm font-semibold text-teal-400 mb-2">
-                Final Output
-              </h2>
-              <pre className="whitespace-pre-wrap break-words text-sm bg-gray-950 border border-gray-800 rounded p-3 max-h-56 overflow-auto">
-                {output}
-              </pre>
-              {toolCalls.length > 0 && (
-                <div className="mt-3">
-                  <h3 className="text-xs font-semibold text-gray-400">
-                    Tool Calls
-                  </h3>
-                  <ul className="list-disc list-inside text-xs text-gray-300">
-                    {toolCalls.map((t, i) => (
-                      <li key={i}>{t}</li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-              <div className="mt-4 text-[10px] text-gray-500 space-y-1 border-t border-gray-800 pt-2">
-                <div>
-                  <span className="text-gray-400">
-                    Effective Instructions Preview:
-                  </span>{' '}
-                  {effectiveInstructions.slice(0, 120)}
-                  {effectiveInstructions.length > 120 ? '…' : ''}
-                </div>
-              </div>
-            </section>
-          )}
         </div>
+
+        {/* Final Output panel hidden for now */}
+        {false && output && (
+          <section className="bg-gray-900/70 border border-gray-800 rounded-lg p-4">
+            <h2 className="text-sm font-semibold text-teal-400 mb-2">
+              Final Output
+            </h2>
+            <pre className="whitespace-pre-wrap break-words text-sm bg-gray-950 border border-gray-800 rounded p-3 max-h-56 overflow-auto">
+              {output}
+            </pre>
+            {toolCalls.length > 0 && (
+              <div className="mt-3">
+                <h3 className="text-xs font-semibold text-gray-400">
+                  Tool Calls
+                </h3>
+                <ul className="list-disc list-inside text-xs text-gray-300">
+                  {toolCalls.map((t, i) => (
+                    <li key={i}>{t}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            <div className="mt-4 text-[10px] text-gray-500 space-y-1 border-t border-gray-800 pt-2">
+              <div>
+                <span className="text-gray-400">
+                  Effective Instructions Preview:
+                </span>{' '}
+                {effectiveInstructions.slice(0, 120)}
+                {effectiveInstructions.length > 120 ? '…' : ''}
+              </div>
+            </div>
+          </section>
+        )}
 
         {/* Full-width Raw Logs when open */}
         {showLogs && (
-          <div className="xl:col-span-4">
+          <div className="xl:col-span-5">
             <RawEventsPanel transcript={transcript} events={events} fullWidth />
           </div>
         )}

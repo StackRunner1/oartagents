@@ -21,7 +21,7 @@ _default_agents: List[AgentDefinition] = [
     ),
     AgentDefinition(
         name="general",
-        model="gpt-4o-realtime-preview-2025-06-03",
+        model="gpt-4.1-mini",  # use a text-capable model for SDK runs; realtime model is for Realtime API only
         instructions="General purpose assistant.",
         voice="alloy",
         tools=["echo_context", "weather", "WebSearchTool"],

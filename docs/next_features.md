@@ -262,10 +262,12 @@ Rename scenarios → agent_groups
 
 UI & UX
 
-- [ ] Split Tool Calls into its own card; show currently available tools for the
+- [x] Split Tool Calls into its own card; show currently available tools for the
       active agent.
-- [ ] Handoff Apply/Dismiss buttons; ensure chronological merge with chat
-      messages.
+- [x] Handoff Apply/Dismiss buttons; ensure chronological merge with chat
+      messages. (chronological merge still pending)
+- [x] Move Agent Graph into a new right column; widen page if needed.
+- [x] Place Handoff Actions directly below chat.
 
 ### Acceptance criteria (summary)
 
@@ -277,3 +279,40 @@ UI & UX
   calls/results.
 - Terminology migrated to agent groups with a temporary shim; UI remains
   functional.
+
+## Next batch of tasks (proposed)
+
+1. Visualization UX polish
+
+- Add a small header toolbar on Agent Graph: Download SVG/DOT, Health check
+  badge (dot found / not found)
+- Button to toggle SVG/PNG (for debugging) and auto-refresh on handoff apply
+
+2. Handoff timeline coherence
+
+- Merge handoff events chronologically with chat messages (by timestamp)
+- Add a compact status strip above Chat showing “Active: <agent>” and last
+  switch reason
+
+3. Agents-as-tools example and discovery
+
+- Add one minimal agent-as-tool (e.g., summarizer) wired to orchestrator via
+  `as_tool`
+- Create `GET /api/tools/catalog` and surface available tools in ToolsPanel
+
+4. Rename scenarios → agent_groups (shim)
+
+- Introduce `AgentGroupDefinition` and a compatibility shim for `scenario_id`
+- Update backend docs and comments; surface new term in UI labels (keep API
+  param via shim)
+
+5. Deployment readiness: Graphviz on Fly.io
+
+- Add Dockerfile or buildpack steps to install Graphviz; set `GRAPHVIZ_DOT`
+- Expose viz health on UI and link to troubleshooting tips
+
+6. Tests and types
+
+- Add minimal tests for tool gating and context injection
+- Tighten types for event shapes (tool_call/tool_result) and agent graph
+  response
