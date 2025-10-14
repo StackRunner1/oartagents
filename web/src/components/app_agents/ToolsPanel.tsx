@@ -8,6 +8,8 @@ export interface ToolsPanelProps {
   onError: (msg: string) => void;
   // Optional: a list of raw events to render a Collapsible Tool Calls view
   events?: any[];
+  // Show the built-in Tool Calls section (defaults to false; we now use a dedicated panel)
+  showCallsSection?: boolean;
 }
 
 export const ToolsPanel: React.FC<ToolsPanelProps> = ({
@@ -17,6 +19,7 @@ export const ToolsPanel: React.FC<ToolsPanelProps> = ({
   allowedTools,
   onError,
   events = [],
+  showCallsSection = false,
 }) => {
   const [toolBusy, setToolBusy] = React.useState<string | null>(null);
   const [toolResult, setToolResult] = React.useState<any | null>(null);
@@ -142,54 +145,56 @@ export const ToolsPanel: React.FC<ToolsPanelProps> = ({
           {JSON.stringify(toolResult, null, 2)}
         </pre>
       )}
-      <div className="pt-2 border-t border-gray-800">
-        <div className="flex items-center justify-between mb-1">
-          <h4 className="text-[12px] font-semibold text-indigo-300">
-            Tool Calls
-          </h4>
-          <button
-            onClick={() => setShowCalls((v) => !v)}
-            className="text-[10px] text-gray-400 hover:text-gray-200">
-            {showCalls ? 'Hide' : 'Show'}
-          </button>
-        </div>
-        {showCalls ? (
-          groupedCalls.length === 0 ? (
-            <div className="text-[11px] text-gray-500">
-              No tool activity yet
-            </div>
-          ) : (
-            <ul className="space-y-1 max-h-40 overflow-auto pr-1">
-              {groupedCalls.map((c, i) => (
-                <li key={`${c.seq}:${i}`} className="text-[11px]">
-                  <div className="flex items-center justify-between">
-                    <span className="text-indigo-200">
-                      #{c.seq} {c.tool}
-                    </span>
-                    {c.time && (
-                      <span className="text-[10px] text-gray-500">
-                        {c.time}
+      {showCallsSection && (
+        <div className="pt-2 border-t border-gray-800">
+          <div className="flex items-center justify-between mb-1">
+            <h4 className="text-[12px] font-semibold text-indigo-300">
+              Tool Calls
+            </h4>
+            <button
+              onClick={() => setShowCalls((v) => !v)}
+              className="text-[10px] text-gray-400 hover:text-gray-200">
+              {showCalls ? 'Hide' : 'Show'}
+            </button>
+          </div>
+          {showCalls ? (
+            groupedCalls.length === 0 ? (
+              <div className="text-[11px] text-gray-500">
+                No tool activity yet
+              </div>
+            ) : (
+              <ul className="space-y-1 max-h-40 overflow-auto pr-1">
+                {groupedCalls.map((c, i) => (
+                  <li key={`${c.seq}:${i}`} className="text-[11px]">
+                    <div className="flex items-center justify-between">
+                      <span className="text-indigo-200">
+                        #{c.seq} {c.tool}
                       </span>
+                      {c.time && (
+                        <span className="text-[10px] text-gray-500">
+                          {c.time}
+                        </span>
+                      )}
+                    </div>
+                    {c.args && (
+                      <pre className="mt-1 bg-gray-950 border border-gray-800 rounded p-2 text-[10px] overflow-auto">
+                        {JSON.stringify(c.args, null, 2)}
+                      </pre>
                     )}
-                  </div>
-                  {c.args && (
-                    <pre className="mt-1 bg-gray-950 border border-gray-800 rounded p-2 text-[10px] overflow-auto">
-                      {JSON.stringify(c.args, null, 2)}
-                    </pre>
-                  )}
-                  {typeof c.result !== 'undefined' && (
-                    <pre className="mt-1 bg-gray-950 border border-gray-800 rounded p-2 text-[10px] overflow-auto">
-                      {typeof c.result === 'string'
-                        ? c.result
-                        : JSON.stringify(c.result, null, 2)}
-                    </pre>
-                  )}
-                </li>
-              ))}
-            </ul>
-          )
-        ) : null}
-      </div>
+                    {typeof c.result !== 'undefined' && (
+                      <pre className="mt-1 bg-gray-950 border border-gray-800 rounded p-2 text-[10px] overflow-auto">
+                        {typeof c.result === 'string'
+                          ? c.result
+                          : JSON.stringify(c.result, null, 2)}
+                      </pre>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )
+          ) : null}
+        </div>
+      )}
     </div>
   );
 };

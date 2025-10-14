@@ -1,8 +1,17 @@
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from pydantic import BaseModel, Field
+
+try:
+    # Context wrapper from Agents SDK for ctx-aware tools
+    from agents import RunContextWrapper  # type: ignore
+except Exception:  # pragma: no cover - fallback typing if SDK unavailable
+
+    class RunContextWrapper(BaseModel):  # type: ignore
+        context: Dict[str, Any] = {}
+
 
 # Placeholder tool registry. In future, implement real functions (DB lookups, etc.).
 
@@ -12,22 +21,30 @@ class ToolSpec(BaseModel):
     description: str = ""
     func: Callable[..., Any]
     params_schema: Dict[str, Any] = Field(default_factory=dict)
+    # Prefer SDK to infer schema from signature (needed for ctx-aware tools)
+    infer_schema: bool = True
+    # Optional roles gating (if non-empty, only sessions with one of these roles see the tool)
+    roles_allowed: List[str] = Field(default_factory=list)
 
 
 tool_registry: Dict[str, ToolSpec] = {}
 
 
-def _echo_context(text: str = ""):
+def _echo_context(ctx: RunContextWrapper[Any], text: str = ""):
     """Simple tool: echoes a provided text for debugging / grounding."""
-    return {"echo": {"text": text}}
+    # Example of reading session context fields
+    meta = getattr(ctx, "context", {}) if ctx else {}
+    return {"echo": {"text": text, "ctx_keys": sorted(list(meta.keys()))}}
 
 
-def _weather(city: str) -> Dict[str, Any]:
+def _weather(ctx: RunContextWrapper[Any], city: str) -> Dict[str, Any]:
     """Return simple faux weather for a city (demo)."""
     return {"city": city, "forecast": "sunny", "temp_c": 23}
 
 
-def _product_search(query: str, limit: int = 3) -> Dict[str, Any]:
+def _product_search(
+    ctx: RunContextWrapper[Any], query: str, limit: int = 3
+) -> Dict[str, Any]:
     """Search a pretend catalog (demo)."""
     items = [
         {"id": "sku-1", "name": "Widget Pro", "price": 49.99},
@@ -42,10 +59,8 @@ tool_registry["echo_context"] = ToolSpec(
     name="echo_context",
     description="Echo input args for debugging/grounding",
     func=_echo_context,
-    params_schema={
-        "type": "object",
-        "properties": {"text": {"type": "string"}},
-    },
+    params_schema={"type": "object", "properties": {"text": {"type": "string"}}},
+    infer_schema=True,
 )
 tool_registry["weather"] = ToolSpec(
     name="weather",
@@ -56,6 +71,8 @@ tool_registry["weather"] = ToolSpec(
         "properties": {"city": {"type": "string"}},
         "required": ["city"],
     },
+    infer_schema=True,
+    roles_allowed=["support", "assistant"],
 )
 tool_registry["product_search"] = ToolSpec(
     name="product_search",
@@ -69,6 +86,8 @@ tool_registry["product_search"] = ToolSpec(
         },
         "required": ["query"],
     },
+    infer_schema=True,
+    roles_allowed=["sales"],
 )
 
 

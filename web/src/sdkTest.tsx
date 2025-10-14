@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import useMicrophone from './hooks/useMicrophone';
 import { useRealtime } from './realtime/useRealtime';
 import { ToolsPanel } from './components/app_agents/ToolsPanel';
+import { AgentGraphPanel } from './components/app_agents/AgentGraphPanel';
 import { SessionConfig } from './components/app_agents/SessionConfig';
 import { AgentConfig } from './components/app_agents/AgentConfig';
 import { PageHeader } from './components/app_agents/PageHeader';
@@ -480,6 +481,12 @@ export default function SDKTestStandalone() {
             enabled={!!sessionId && chatStarted}
           />
 
+          <AgentGraphPanel
+            baseUrl={baseUrl}
+            scenarioId={'default'}
+            rootAgent={activeAgent.name}
+          />
+
           <button
             onClick={() => setShowLogs((v) => !v)}
             className="w-full text-left text-[11px] px-2 py-1 rounded border border-gray-700 hover:bg-gray-800 text-gray-300">
@@ -518,6 +525,57 @@ export default function SDKTestStandalone() {
             onSend={sendMessage}
             handoffEvents={handoffEvents}
           />
+
+          {/* Dedicated Tool Calls panel */}
+          <section className="bg-gray-900/70 border border-gray-800 rounded-lg p-4">
+            <div className="flex items-center justify-between mb-2">
+              <h2 className="text-sm font-semibold text-indigo-300">
+                Tool Calls
+              </h2>
+              <span className="text-[10px] text-gray-500">from events</span>
+            </div>
+            {events.filter(
+              (e) => e.type === 'tool_call' || e.type === 'tool_result'
+            ).length === 0 ? (
+              <div className="text-[11px] text-gray-500">
+                No tool activity yet
+              </div>
+            ) : (
+              <ul className="space-y-1 max-h-56 overflow-auto pr-1">
+                {events
+                  .filter(
+                    (e) => e.type === 'tool_call' || e.type === 'tool_result'
+                  )
+                  .sort((a, b) => a.seq - b.seq)
+                  .map((ev: any, i: number) => (
+                    <li key={`${ev.seq}:${i}`} className="text-[11px]">
+                      <div className="flex items-center justify-between">
+                        <span className="text-indigo-200">
+                          #{ev.seq} {ev.data?.tool || 'tool'}
+                        </span>
+                        <span className="text-[10px] text-gray-500">
+                          {new Date(
+                            ev.timestamp_ms || Date.now()
+                          ).toLocaleTimeString()}
+                        </span>
+                      </div>
+                      {ev.type === 'tool_call' && ev.data?.args && (
+                        <pre className="mt-1 bg-gray-950 border border-gray-800 rounded p-2 text-[10px] overflow-auto">
+                          {JSON.stringify(ev.data.args, null, 2)}
+                        </pre>
+                      )}
+                      {ev.type === 'tool_result' && (
+                        <pre className="mt-1 bg-gray-950 border border-gray-800 rounded p-2 text-[10px] overflow-auto">
+                          {typeof ev.text === 'string'
+                            ? ev.text
+                            : JSON.stringify(ev.data || {}, null, 2)}
+                        </pre>
+                      )}
+                    </li>
+                  ))}
+              </ul>
+            )}
+          </section>
 
           {/* Final Output panel hidden for now */}
           {false && output && (

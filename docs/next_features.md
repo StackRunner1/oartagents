@@ -11,8 +11,8 @@ Handoff/agent indicators: show when the orchestrator suggests a root change +
 highlight active agent + the tools it has available (in Tools component) [~]
 Improve multi-agent orchestration based on official docs
 (https://openai.github.io/openai-agents-python/multi_agent/) — LLM-only via SDK
-handoff [ ] Tool call visibility: clearer grouping, collapsible details <=
-CRITICAL NOW [ ] Optimistic rendering of user messages [ ] Implement Context
+handoff [x] Tool call visibility: clearer grouping, collapsible details <=
+CRITICAL NOW [ ] Optimistic rendering of user messages [x] Implement Context
 Management based on official documentation
 (https://openai.github.io/openai-agents-python/context/) <= CRITICAL [ ]
 Implement basic Guardrails, making it reusable/extensable in future - based on
@@ -51,7 +51,7 @@ correctly (with simulated entry point or placeholder agent / tool in THIS
 project so that WHEN WE migrate the files/folder into the main project, it is a
 'plug-and-play approach)
 
-- [ ] Context-aware agent runtime: attach a placeholder context to every turn
+- [x] Context-aware agent runtime: attach a placeholder context to every turn
       (SDK Context API)
   - the final path in the main project is pages/projects/[projectId]/ (+ various
     pages wihtin that)
@@ -202,11 +202,12 @@ Phase 1 (this sprint)
 
 - Native handoffs for existing agents (General/Sales/Support) with recommended
   prompt.
-- Add ToolContext/RunContextWrapper support in tools; add
-  `POST /api/sdk/session/context` and inject into runs.
-- Implement `is_enabled` dynamic gating for at least one tool and one
-  agent-as-tool.
-- Move Tool Calls to dedicated card; add basic Apply/Dismiss for handoffs.
+- [x] Add ToolContext/RunContextWrapper support in tools; add
+      `POST /api/sdk/session/context` and inject into runs.
+- [x] Implement `is_enabled` dynamic gating for at least one tool (roles-based)
+      and wire gating in tool resolution.
+- [x] Move Tool Calls to dedicated card; add basic Apply/Dismiss wiring (UI
+      shell).
 
 Phase 2
 
@@ -243,11 +244,11 @@ Agents-as-tools
 
 Context + ToolContext
 
-- [ ] Add `POST /api/sdk/session/context`; persist to store; pass into
+- [x] Add `POST /api/sdk/session/context`; persist to store; pass into
       `Runner.run`.
-- [ ] Update tools to accept `ctx` and use `ctx.context` fields.
-- [ ] Implement `is_enabled` gating on one built-in tool and one registry tool
-      based on context roles/flags.
+- [x] Update tools to accept `ctx` and use `ctx.context` fields.
+- [x] Implement `is_enabled`/roles gating on registry tools based on context
+      roles/flags.
 
 Tool library & discovery
 

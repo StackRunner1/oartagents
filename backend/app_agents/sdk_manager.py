@@ -5,8 +5,9 @@ import logging
 from typing import Any, Dict
 
 # Direct Agents SDK import only
-from agents import (Agent, ModelSettings, Runner,  # type: ignore
-                    SQLiteSession, function_tool)
+from agents import RunContextWrapper  # type: ignore
+from agents import Runner  # type: ignore
+from agents import Agent, ModelSettings, SQLiteSession, function_tool
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +62,9 @@ def get_or_create_session(session_id: str):
     return session
 
 
-def _resolve_agent_tools(names: list[str]):
+def _resolve_agent_tools(
+    names: list[str], session_context: Dict[str, Any] | None = None
+):
     tools = []
     _ensure_builtin_tools_loaded()
     # In-file simple boolean switches (safe defaults). Easier to port later.
@@ -125,8 +128,20 @@ def _resolve_agent_tools(names: list[str]):
         spec = tool_registry.get(n)
         if not spec:
             continue
+        # Dynamic gating by roles if specified on the tool spec
+        try:
+            roles_allowed = getattr(spec, "roles_allowed", []) or []
+        except Exception:
+            roles_allowed = []
+        if roles_allowed:
+            sess_roles = set((session_context or {}).get("roles", []) or [])
+            if not sess_roles.intersection(set(roles_allowed)):
+                # Skip tool if no intersection between session roles and allowed roles
+                continue
         # Try modern signature first; fall back to variants while preserving schema
-        params = spec.params_schema or None
+        # If infer_schema is True, let SDK derive from signature; else pass provided schema
+        infer = getattr(spec, "infer_schema", True)
+        params = None if infer else (spec.params_schema or None)
         try:
             ft = function_tool(
                 spec.func,
@@ -155,6 +170,108 @@ def _resolve_agent_tools(names: list[str]):
 def _build_model_provider(model_name: str):
     # Use raw model string with Agents SDK
     return model_name
+
+
+def build_agent_network_for_viz(scenario_id: str, root_agent: str | None = None):
+    """Construct Agents with tools and native handoffs for visualization.
+    Returns (root_agent_obj, name_to_agent_dict).
+    This does not modify runtime state; used only for graph viz.
+    """
+    sc = get_scenario(scenario_id)
+    if not sc:
+        return None, {}
+    try:
+        from agents import Agent  # type: ignore
+        from agents.extensions.handoff_prompt import \
+            prompt_with_handoff_instructions  # type: ignore
+    except Exception:
+        return None, {}
+
+    # Pre-create all agents without handoffs, then wire handoffs referencing instances
+    name_to_agent: Dict[str, Any] = {}
+    for ad in sc.agents:
+        tools = _resolve_agent_tools(ad.tools)
+        prov = _build_model_provider(ad.model)
+        instructions = ad.instructions
+        try:
+            if ad.handoff_targets:
+                instructions = prompt_with_handoff_instructions(instructions)
+        except Exception:
+            pass
+        name_to_agent[ad.name] = Agent(
+            name=ad.name,
+            instructions=instructions,
+            model=prov,
+            tools=tools,
+        )
+
+    # Wire native handoffs using actual Agent instances
+    for ad in sc.agents:
+        src = name_to_agent.get(ad.name)
+        if not src:
+            continue
+        try:
+            from agents import handoff  # type: ignore
+        except Exception:
+            continue
+        handoffs = []
+        for tgt_name in ad.handoff_targets or []:
+            tgt = name_to_agent.get(tgt_name)
+            if tgt is None:
+                continue
+            # Minimal handoff; customize later with on_handoff/input_type if desired
+            try:
+                handoffs.append(handoff(agent=tgt))
+            except Exception:
+                # Fallback: pass agent directly (SDK allows Agent or Handoff)
+                handoffs.append(tgt)
+        # Recreate with handoffs to avoid mutating internal state
+        if handoffs:
+            base = src
+            name_to_agent[ad.name] = Agent(
+                name=base.name,
+                instructions=base.instructions,
+                model=base.model,
+                tools=list(base.tools or []),
+                handoffs=handoffs,
+            )
+
+    # Determine root for viz: explicit param (case-insensitive), else supervisor, else default_root, else any
+    root_candidate = (root_agent or "").strip()
+    root_agent_obj = None
+    if root_candidate:
+        # Case-insensitive match by name
+        root_agent_obj = name_to_agent.get(root_candidate)
+        if root_agent_obj is None:
+            lower_map = {k.lower(): v for k, v in name_to_agent.items()}
+            root_agent_obj = lower_map.get(root_candidate.lower())
+    if root_agent_obj is None:
+        # Try supervisor by role
+        sup_name = next(
+            (
+                a.name
+                for a in sc.agents
+                if getattr(a, "role", "").lower() == "supervisor"
+            ),
+            None,
+        )
+        if sup_name:
+            root_agent_obj = name_to_agent.get(sup_name)
+    if root_agent_obj is None:
+        # Try scenario default_root (case-insensitive)
+        if sc.default_root:
+            root_agent_obj = name_to_agent.get(sc.default_root) or next(
+                (
+                    v
+                    for k, v in name_to_agent.items()
+                    if k.lower() == sc.default_root.lower()
+                ),
+                None,
+            )
+    if root_agent_obj is None and name_to_agent:
+        # Fallback to first agent defined
+        root_agent_obj = next(iter(name_to_agent.values()))
+    return root_agent_obj, name_to_agent
 
 
 ## Removed Responses payload extraction helper
@@ -224,7 +341,9 @@ async def create_agent_session(
                 None,
             )
             if ad:
-                tools = _resolve_agent_tools(ad.tools)
+                tools = _resolve_agent_tools(
+                    ad.tools, session_context=store.get_context(session_id)
+                )
     # Apply handoff prompt if extension available and agent participates in handoffs
     try:
         from agents.extensions.handoff_prompt import \
@@ -278,7 +397,9 @@ async def run_agent_turn(
                 None,
             )
             if ad:
-                tools = _resolve_agent_tools(ad.tools)
+                tools = _resolve_agent_tools(
+                    ad.tools, session_context=store.get_context(session_id)
+                )
     # Handoff instructions if applicable
     base_instr = agent_spec.get("instructions", "You are a helpful assistant.")
     try:
@@ -330,7 +451,10 @@ async def run_agent_turn(
         name=name, instructions=instr, model=prov, tools=tools, model_settings=ms
     )
     try:
-        result = await Runner.run(agent, user_input, session=session)
+        ctx = RunContextWrapper(store.get_context(session_id)) if RunContextWrapper else None  # type: ignore
+        result = await Runner.run(
+            agent, user_input, session=session, context=(ctx.context if ctx else None)
+        )
     except Exception as e:
         # Emit a log event and continue to fallback
         try:
