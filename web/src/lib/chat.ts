@@ -1,4 +1,4 @@
-export type ChatSource = 'sdk' | 'realtime';
+export type ChatSource = 'sdk' | 'llm' | 'realtime';
 
 export interface ChatMessage {
   id: string;
@@ -10,9 +10,22 @@ export interface ChatMessage {
   source: ChatSource;
 }
 
+function normalizeText(s: string): string {
+  // Collapse excessive whitespace while preserving newlines
+  if (!s) return '';
+  // Convert Windows newlines to \n, trim lines, and collapse multiple blank lines
+  const unified = s.replace(/\r\n/g, '\n');
+  const cleaned = unified
+    .split('\n')
+    .map((line) => line.replace(/\s+/g, ' ').trim())
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n');
+  return cleaned.trim();
+}
+
 export function extractText(item: any): string {
   if (!item) return '';
-  if (typeof item.content === 'string') return item.content;
+  if (typeof item.content === 'string') return normalizeText(item.content);
   if (Array.isArray(item.content)) {
     const textParts = item.content
       .filter(
@@ -22,23 +35,46 @@ export function extractText(item: any): string {
             c.type === 'input_text' ||
             c.type === 'text')
       )
-      .map((c: any) => c.text?.trim())
+      .map((c: any) => (typeof c.text === 'string' ? c.text : ''))
       .filter(Boolean);
-    if (textParts.length) return textParts.join('\n');
+    if (textParts.length) return normalizeText(textParts.join('\n'));
   }
-  if (typeof item.text === 'string') return item.text;
-  if (typeof item.output === 'string') return item.output;
+  // Common alternative fields
+  if (typeof item.text === 'string') return normalizeText(item.text);
+  if (typeof item.output === 'string') return normalizeText(item.output);
+  if (Array.isArray(item.output_text))
+    return normalizeText(item.output_text.join('\n'));
+  if (Array.isArray(item.input_text))
+    return normalizeText(item.input_text.join('\n'));
   if (item.arguments && typeof item.arguments === 'string')
-    return item.arguments;
+    return normalizeText(item.arguments);
+  if (item.response && typeof item.response === 'object') {
+    const r = item.response;
+    if (Array.isArray(r.output_text))
+      return normalizeText(r.output_text.join('\n'));
+    if (typeof r.text === 'string') return normalizeText(r.text);
+  }
+  // Session items shape
+  if (Array.isArray(item.items)) {
+    const parts = item.items
+      .filter(
+        (it: any) =>
+          it && it.type === 'output_text' && typeof it.text === 'string'
+      )
+      .map((it: any) => it.text);
+    if (parts.length) return normalizeText(parts.join('\n'));
+  }
   return '';
 }
 
 export function buildChatMessages(
   events: any[],
   transcript: any[],
-  realtimeLogs: any[]
+  realtimeLogs: any[],
+  opts?: { source?: ChatSource }
 ): ChatMessage[] {
   const msgs: ChatMessage[] = [];
+  const source: ChatSource = opts?.source || 'sdk';
   if (events.length > 0) {
     const partials = new Map<string, string>();
     for (const ev of events) {
@@ -54,7 +90,7 @@ export function buildChatMessages(
           }`,
           raw: ev,
           kind: 'system',
-          source: 'sdk',
+          source,
         });
       } else if (ev.type === 'message') {
         const role = ev.role || 'assistant';
@@ -67,16 +103,23 @@ export function buildChatMessages(
         const progressive = ev.message_id
           ? partials.get(ev.message_id) || ''
           : '';
-        const text = ev.final
+        // Prefer final text; otherwise use progressive tokens or fallback extraction
+        const preferred = ev.final
           ? ev.text || progressive
           : progressive || ev.text || '';
+        const fallback = extractText(ev);
+        const text = normalizeText(preferred || fallback);
+        if (!text) {
+          // Avoid pushing empty assistant/system messages
+          continue;
+        }
         msgs.push({
           id: `e:${ev.seq}`,
           role,
           text,
           raw: ev,
           kind,
-          source: 'sdk',
+          source,
         });
       }
     }
@@ -92,7 +135,7 @@ export function buildChatMessages(
           text,
           raw: { message_id: mid, type: 'token' },
           kind: 'assistant',
-          source: 'sdk',
+          source,
         });
       }
     }
@@ -116,7 +159,7 @@ export function buildChatMessages(
         text,
         raw: it,
         kind,
-        source: 'sdk',
+        source,
       });
     }
   }
