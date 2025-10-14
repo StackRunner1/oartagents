@@ -17,9 +17,9 @@ class ToolSpec(BaseModel):
 tool_registry: Dict[str, ToolSpec] = {}
 
 
-def _echo_context(**kwargs):
-    """Simple tool: returns the kwargs for debugging / grounding."""
-    return {"echo": kwargs}
+def _echo_context(text: str = ""):
+    """Simple tool: echoes a provided text for debugging / grounding."""
+    return {"echo": {"text": text}}
 
 
 def _weather(city: str) -> Dict[str, Any]:
@@ -42,7 +42,10 @@ tool_registry["echo_context"] = ToolSpec(
     name="echo_context",
     description="Echo input args for debugging/grounding",
     func=_echo_context,
-    params_schema={},
+    params_schema={
+        "type": "object",
+        "properties": {"text": {"type": "string"}},
+    },
 )
 tool_registry["weather"] = ToolSpec(
     name="weather",

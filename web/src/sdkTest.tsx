@@ -109,7 +109,7 @@ export default function SDKTestStandalone() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          agent_name: activeAgent.name,
+          agent_name: activeAgent.id, // use canonical id to match scenario
           instructions: effectiveInstructions,
           session_id: sessionId || undefined,
           model,
@@ -159,7 +159,7 @@ export default function SDKTestStandalone() {
           client_message_id: clientMessageId,
           scenario_id: 'default',
           agent: {
-            name: activeAgent.name,
+            name: activeAgent.id, // ensure backend turns run with the right agent
             instructions: effectiveInstructions,
             model,
           },
@@ -214,7 +214,7 @@ export default function SDKTestStandalone() {
         window.setTimeout(() => void refresh(), 600);
         window.setTimeout(() => void refresh(), 1400);
       }
-      // Orchestrator call (placeholder: backend may switch root later)
+      // Orchestrator call (backend may switch root); debounce and sync active agent
       try {
         const orc = await fetch(`${baseUrl}/api/orchestrate`, {
           method: 'POST',
@@ -229,17 +229,25 @@ export default function SDKTestStandalone() {
         if (orc.ok) {
           const ojson = await orc.json();
           if (ojson.changed && ojson.chosen_root) {
-            // For now just console log; UI handoff timeline below.
-            setHandoffEvents((ev) => [
-              ...ev,
-              {
-                id: 'h' + ev.length,
-                from: activeAgent.name,
-                to: ojson.chosen_root,
-                reason: ojson.reason || 'n/a',
-                at: new Date().toISOString(),
-              },
-            ]);
+            // Update activeAgent immediately to keep tools in sync
+            const next = ojson.chosen_root as string;
+            const nextId = next.toLowerCase();
+            setActiveAgentId(nextId);
+            // Append a local handoff timeline entry (UI-only), but dedupe if same
+            setHandoffEvents((ev) => {
+              const last = ev[ev.length - 1];
+              if (last && last.to.toLowerCase() === nextId) return ev;
+              return [
+                ...ev,
+                {
+                  id: 'h' + ev.length,
+                  from: activeAgent.name,
+                  to: next,
+                  reason: ojson.reason || 'n/a',
+                  at: new Date().toISOString(),
+                },
+              ];
+            });
           }
         }
       } catch (e) {
@@ -462,6 +470,7 @@ export default function SDKTestStandalone() {
             activeAgentName={activeAgent.name}
             allowedTools={allowedTools}
             onError={(msg) => setError(msg || null)}
+            events={events}
           />
 
           <UsagePanel

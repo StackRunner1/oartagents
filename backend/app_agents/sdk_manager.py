@@ -4,58 +4,11 @@ import asyncio
 import logging
 from typing import Any, Dict
 
+# Direct Agents SDK import only
+from agents import (Agent, ModelSettings, Runner,  # type: ignore
+                    SQLiteSession, function_tool)
+
 logger = logging.getLogger(__name__)
-
-# Load Agents SDK unconditionally; this app requires it. Try multiple import paths for robustness.
-Agent = ModelSettings = Runner = SQLiteSession = function_tool = None  # type: ignore
-_import_err: Exception | None = None
-try:
-    import agents as _agents  # type: ignore
-
-    if all(
-        hasattr(_agents, n)
-        for n in ("Agent", "ModelSettings", "Runner", "SQLiteSession", "function_tool")
-    ):
-        from agents import Runner  # type: ignore
-        from agents import Agent, ModelSettings, SQLiteSession, function_tool
-    else:
-        raise ImportError(
-            "'agents' module found but missing required attributes; possibly a different package installed."
-        )
-except Exception as e1:  # pragma: no cover
-    _import_err = e1
-    try:
-        import openai_agents as _agents  # type: ignore
-
-        if all(
-            hasattr(_agents, n)
-            for n in (
-                "Agent",
-                "ModelSettings",
-                "Runner",
-                "SQLiteSession",
-                "function_tool",
-            )
-        ):
-            from openai_agents import ModelSettings  # type: ignore
-            from openai_agents import (Agent, Runner, SQLiteSession,
-                                       function_tool)
-
-            _import_err = None
-        else:
-            raise ImportError(
-                "'openai_agents' module found but missing required attributes."
-            )
-    except Exception as e2:  # pragma: no cover
-        _import_err = e2
-
-if any(v is None for v in (Agent, ModelSettings, Runner, SQLiteSession, function_tool)):
-    msg = (
-        "OpenAI Agents SDK is required. Install using: pip install 'openai-agents>=0.3.2'. "
-        "Tried imports 'agents' and 'openai_agents' but failed. Last error: "
-        + str(_import_err)
-    )
-    raise RuntimeError(msg)
 
 # Built-in tools (only if Agents SDK is enabled)
 FileSearchTool = WebSearchTool = ComputerTool = HostedMCPTool = LocalShellTool = ImageGenerationTool = CodeInterpreterTool = None  # type: ignore
@@ -172,12 +125,26 @@ def _resolve_agent_tools(names: list[str]):
         spec = tool_registry.get(n)
         if not spec:
             continue
-        ft = function_tool(
-            spec.func,
-            name=spec.name,
-            description=spec.description,
-            parameters=spec.params_schema or None,
-        )
+        # Try modern signature first; fall back to variants while preserving schema
+        params = spec.params_schema or None
+        try:
+            ft = function_tool(
+                spec.func,
+                name=spec.name,
+                description=spec.description,
+                parameters=params,
+            )
+        except TypeError:
+            try:
+                # Older signature may accept positional schema arg
+                ft = function_tool(spec.func, params)  # type: ignore[arg-type]
+            except TypeError:
+                try:
+                    # Or keyword-only parameters
+                    ft = function_tool(spec.func, parameters=params)  # type: ignore[call-arg]
+                except TypeError:
+                    # Last resort: no schema (may auto-generate); less strict
+                    ft = function_tool(spec.func)
         tools.append(ft)
     return tools
 
@@ -248,7 +215,14 @@ async def create_agent_session(
     if scenario_id:
         sc = get_scenario(scenario_id)
         if sc:
-            ad = next((a for a in sc.agents if a.name == name), None)
+            ad = next(
+                (
+                    a
+                    for a in sc.agents
+                    if a.name == name or a.name.lower() == str(name).lower()
+                ),
+                None,
+            )
             if ad:
                 tools = _resolve_agent_tools(ad.tools)
     # Apply handoff prompt if extension available and agent participates in handoffs
@@ -295,7 +269,14 @@ async def run_agent_turn(
     if scenario_id:
         sc = get_scenario(scenario_id)
         if sc:
-            ad = next((a for a in sc.agents if a.name == name), None)
+            ad = next(
+                (
+                    a
+                    for a in sc.agents
+                    if a.name == name or a.name.lower() == str(name).lower()
+                ),
+                None,
+            )
             if ad:
                 tools = _resolve_agent_tools(ad.tools)
     # Handoff instructions if applicable
@@ -403,6 +384,9 @@ async def run_agent_turn(
             tout = getattr(i, "tool_output", None) or getattr(i, "output", None)
             if tout is not None:
                 seq = store.next_seq(session_id)
+                res_tool = (
+                    getattr(i, "tool_name", None) or getattr(i, "name", None) or tname
+                )
                 evr = Event(
                     session_id=session_id,
                     seq=seq,
@@ -411,7 +395,7 @@ async def run_agent_turn(
                     agent_id=name,
                     text=str(tout)[:4000],
                     final=True,
-                    data={"tool": tname or getattr(i, "tool_name", None)},
+                    data={"tool": res_tool},
                     timestamp_ms=int(time.time() * 1000),
                 )
                 store.append_event(session_id, evr)
@@ -437,6 +421,24 @@ async def run_agent_turn(
         if usage:
             totals = store.add_usage(session_id, usage)
             usage = {**usage, "aggregated": totals}
+        else:
+            # Fallback: count the request so Usage panel isn't stuck at zero
+            totals = store.add_usage(
+                session_id,
+                {
+                    "requests": 1,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "total_tokens": 0,
+                },
+            )
+            usage = {
+                "requests": 1,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+                "aggregated": totals,
+            }
     except Exception:
         pass
 
@@ -688,22 +690,33 @@ async def run_supervisor_orchestrate(
                 decision = {"target": target, "reason": reason or "supervisor_choice"}
             return {"ok": True, **decision}
 
-        handoff_tool = function_tool(
-            handoff,
-            name="handoff",
-            description="Select the best agent to handle the user.",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "target": {
-                        "type": "string",
-                        "description": "Agent name to activate",
-                    },
-                    "reason": {"type": "string"},
+        handoff_schema = {
+            "type": "object",
+            "properties": {
+                "target": {
+                    "type": "string",
+                    "description": "Agent name to activate",
                 },
-                "required": ["target"],
+                "reason": {"type": "string"},
             },
-        )
+            "required": ["target"],
+        }
+        # Create handoff tool with compatibility across SDK versions
+        try:
+            handoff_tool = function_tool(
+                handoff,
+                name="handoff",
+                description="Select the best agent to handle the user.",
+                parameters=handoff_schema,
+            )
+        except TypeError:
+            try:
+                handoff_tool = function_tool(handoff, handoff_schema)  # type: ignore[arg-type]
+            except TypeError:
+                try:
+                    handoff_tool = function_tool(handoff, parameters=handoff_schema)  # type: ignore[call-arg]
+                except TypeError:
+                    handoff_tool = function_tool(handoff)
 
         # Apply model provider
         prov = _build_model_provider(sup.model)
@@ -738,9 +751,25 @@ async def run_supervisor_orchestrate(
         session = get_or_create_session(session_id or f"sup-{sc.id}")
         try:
             await Runner.run(supervisor, last_user_text or "", session=session)
-        except Exception:
-            # Non-fatal: fall back to heuristic below
-            pass
+        except Exception as e:
+            # Log a supervisor error event for debugging
+            try:
+                seq = store.next_seq(session_id or f"sup-{sc.id}")
+                store.append_event(
+                    session_id or f"sup-{sc.id}",
+                    Event(
+                        session_id=(session_id or f"sup-{sc.id}"),
+                        seq=seq,
+                        type="log",
+                        role="system",
+                        agent_id=sup.name,
+                        text=f"supervisor_error: {e}",
+                        final=True,
+                        timestamp_ms=int(time.time() * 1000),
+                    ),
+                )
+            except Exception:
+                pass
     except Exception:
         # Entire supervisor setup failed; fall back
         pass

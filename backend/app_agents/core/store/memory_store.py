@@ -18,6 +18,8 @@ class InMemorySessionStore(SessionStore):
         self._lock = Lock()
         # Aggregated usage per session
         self._usage = {}
+        # Session context payloads (placeholder for Context API integration)
+        self._context = {}
 
     def create_session(
         self, session_id: str, active_agent_id: str, scenario_id: Optional[str] = None
@@ -104,6 +106,7 @@ class InMemorySessionStore(SessionStore):
             self._seq.pop(session_id, None)
             self._idempotency.pop(session_id, None)
             self._usage.pop(session_id, None)
+            self._context.pop(session_id, None)
 
     # ---- Usage aggregation helpers ----
     def add_usage(
@@ -152,6 +155,15 @@ class InMemorySessionStore(SessionStore):
                 "output_tokens": 0,
                 "total_tokens": 0,
             }
+
+    # ---- Context helpers ----
+    def set_context(self, session_id: str, context: Dict) -> None:
+        with self._lock:
+            self._context[session_id] = dict(context or {})
+
+    def get_context(self, session_id: str) -> Dict:
+        with self._lock:
+            return dict(self._context.get(session_id, {}))
 
 
 # singleton for app use
