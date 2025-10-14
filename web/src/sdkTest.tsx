@@ -167,8 +167,27 @@ export default function SDKTestStandalone() {
         }),
         signal: ac.signal,
       });
+      // Optimistically add local user message with the same client_message_id to preserve order
+      setEvents((prev) => {
+        const nowMs = Date.now();
+        const maxSeq = prev.reduce((m, e) => Math.max(m, e.seq || 0), 0);
+        const optimistic = {
+          session_id: sessionId,
+          seq: maxSeq + 1,
+          type: 'message',
+          message_id: clientMessageId,
+          role: 'user',
+          agent_id: null,
+          text: input,
+          final: true,
+          timestamp_ms: nowMs,
+          data: { optimistic: true, client_message_id: clientMessageId },
+        } as any;
+        const merged = [...prev, optimistic];
+        merged.sort((a, b) => (a.seq || 0) - (b.seq || 0));
+        return merged;
+      });
       // Kick an immediate events refresh while the turn processes on the server
-      // so the just-appended user event is visible right away
       void refresh();
       window.setTimeout(() => void refresh(), 250);
       window.setTimeout(() => void refresh(), 900);
@@ -176,27 +195,25 @@ export default function SDKTestStandalone() {
       window.clearTimeout(timeout);
       if (!r.ok) throw new Error(await r.text());
       const data = await r.json();
+      // Remove optimistic placeholder for this client_message_id if present
+      setEvents((prev) =>
+        prev.filter(
+          (e) =>
+            !(
+              e?.type === 'message' &&
+              e?.message_id === clientMessageId &&
+              e?.data?.optimistic
+            )
+        )
+      );
       // Mark chat as started on first successful turn
       if (!chatStarted) setChatStarted(true);
       // clear input after successful send
       setInput('');
       setOutput(data.final_output || '');
       setToolCalls(data.tool_calls || []);
-      // Append returned events (user event only)
-      if (Array.isArray(data.events) && data.events.length > 0) {
-        setEvents((prev) => {
-          const merged = [...prev];
-          for (const ev of data.events) {
-            if (!merged.some((e) => e.seq === ev.seq)) merged.push(ev);
-          }
-          merged.sort((a, b) => a.seq - b.seq);
-          const maxSeq = merged.length
-            ? merged[merged.length - 1].seq
-            : lastSeq;
-          setLastSeq(maxSeq);
-          return merged;
-        });
-      }
+      // Do not directly append returned events; the poller will fetch them.
+      // This avoids brief duplicate rendering when optimistic user message is present.
       if (autoRefresh) void loadTranscript(false);
       // Events fetching strategy
       if (autoRefresh) {

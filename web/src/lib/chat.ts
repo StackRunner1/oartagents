@@ -76,8 +76,59 @@ export function buildChatMessages(
   const msgs: ChatMessage[] = [];
   const source: ChatSource = opts?.source || 'sdk';
   if (events.length > 0) {
+    // Stable sort: seq asc if present, then timestamp_ms asc, then array order
+    const withIndex = events.map((e, i) => ({ e, i }));
+    withIndex.sort((a, b) => {
+      const as =
+        typeof a.e.seq === 'number' ? a.e.seq : Number.MAX_SAFE_INTEGER;
+      const bs =
+        typeof b.e.seq === 'number' ? b.e.seq : Number.MAX_SAFE_INTEGER;
+      if (as !== bs) return as - bs;
+      const at =
+        typeof a.e.timestamp_ms === 'number'
+          ? a.e.timestamp_ms
+          : Number.MAX_SAFE_INTEGER;
+      const bt =
+        typeof b.e.timestamp_ms === 'number'
+          ? b.e.timestamp_ms
+          : Number.MAX_SAFE_INTEGER;
+      if (at !== bt) return at - bt;
+      return a.i - b.i;
+    });
+    const eventsSorted = withIndex.map((w) => w.e);
+    // Dedupe: if we have a real (non-optimistic) message for a message_id, skip any optimistic placeholder duplicates
+    const realMessageIds = new Set(
+      eventsSorted
+        .filter(
+          (e: any) =>
+            e &&
+            e.type === 'message' &&
+            e.message_id &&
+            (!e.data || !e.data.optimistic)
+        )
+        .map((e: any) => e.message_id as string)
+    );
+    // Also gather a set of normalized user texts from real events to help dedupe optimistic placeholders
+    const realUserTexts = new Set(
+      eventsSorted
+        .filter(
+          (e: any) =>
+            e &&
+            e.type === 'message' &&
+            e.role === 'user' &&
+            (!e.data || !e.data.optimistic) &&
+            typeof e.text === 'string' &&
+            e.text.trim().length > 0
+        )
+        .map((e: any) => normalizeText(e.text))
+    );
     const partials = new Map<string, string>();
-    for (const ev of events) {
+    // Additional seen sets to dedupe duplicate user messages that can appear
+    // when an optimistic local user item and the server's echoed user event
+    // are both present briefly. Prefer non-optimistic/server-echos.
+    const seenUserIds = new Set<string>();
+    const seenUserTextRecent = new Map<string, number>(); // normalized text -> last timestamp_ms
+    for (const ev of eventsSorted) {
       if (ev.type === 'token' && ev.message_id) {
         const sofar = partials.get(ev.message_id) || '';
         partials.set(ev.message_id, sofar + (ev.text || ''));
@@ -93,6 +144,18 @@ export function buildChatMessages(
           source,
         });
       } else if (ev.type === 'message') {
+        // Skip optimistic placeholder if a real message with same message_id exists
+        if (ev?.data?.optimistic) {
+          if (ev.message_id && realMessageIds.has(ev.message_id)) {
+            continue;
+          }
+          // Secondary guard: if a real user message exists with same normalized text, skip optimistic
+          const evText =
+            typeof ev.text === 'string' ? normalizeText(ev.text) : '';
+          if (ev.role === 'user' && evText && realUserTexts.has(evText)) {
+            continue;
+          }
+        }
         const role = ev.role || 'assistant';
         const kind: ChatMessage['kind'] =
           role === 'user'
@@ -109,6 +172,28 @@ export function buildChatMessages(
           : progressive || ev.text || '';
         const fallback = extractText(ev);
         const text = normalizeText(preferred || fallback);
+        // Robust dedupe: if this is a user message and we've already seen the same
+        // message_id or the same normalized text within a short window, skip it.
+        if (kind === 'user') {
+          const mid = typeof ev.message_id === 'string' ? ev.message_id : '';
+          if (mid) {
+            if (seenUserIds.has(mid)) {
+              continue;
+            }
+          }
+          const tnorm = text;
+          const ts = typeof ev.timestamp_ms === 'number' ? ev.timestamp_ms : 0;
+          const lastTs = seenUserTextRecent.get(tnorm);
+          // 7.5s window is generous enough to collapse immediate optimistic/server echoes
+          if (tnorm && lastTs && Math.abs(ts - lastTs) < 7500) {
+            // Prefer non-optimistic version: if current is optimistic and we already saw a real one, skip
+            if (ev?.data?.optimistic) {
+              continue;
+            }
+          }
+          if (mid) seenUserIds.add(mid);
+          if (tnorm && ts) seenUserTextRecent.set(tnorm, ts);
+        }
         if (!text) {
           // Avoid pushing empty assistant/system messages
           continue;
@@ -124,7 +209,7 @@ export function buildChatMessages(
       }
     }
     for (const [mid, text] of partials.entries()) {
-      const hasFinal = events.some(
+      const hasFinal = eventsSorted.some(
         (e: any) =>
           e.type === 'message' && e.message_id === mid && e.final === true
       );

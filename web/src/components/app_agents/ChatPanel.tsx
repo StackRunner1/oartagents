@@ -36,13 +36,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   onSend,
   handoffEvents = [],
 }) => {
-  const chatMessages: ChatMessage[] = useMemo(
-    () =>
-      buildChatMessages(events, transcript, realtimeLogs, {
-        source: activeAgentName === 'LLM' ? 'llm' : 'sdk',
-      }),
-    [events, transcript, realtimeLogs, activeAgentName]
-  );
+  const chatMessages: ChatMessage[] = useMemo(() => {
+    return buildChatMessages(events, transcript, realtimeLogs, {
+      source: activeAgentName === 'LLM' ? 'llm' : 'sdk',
+    });
+  }, [events, transcript, realtimeLogs, activeAgentName]);
   const streaming = useMemo(() => computeStreaming(events), [events]);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
