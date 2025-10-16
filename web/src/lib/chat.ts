@@ -7,6 +7,7 @@ export interface ChatMessage {
   raw: any;
   kind: 'user' | 'assistant' | 'tool' | 'system';
   toolName?: string;
+  toolData?: any;
   source: ChatSource;
 }
 
@@ -136,11 +137,46 @@ export function buildChatMessages(
         msgs.push({
           id: `handoff:${ev.seq}`,
           role: 'system',
-          text: `Handoff to ${ev.agent_id}${
+          text: `Handoff applied → ${ev.agent_id}${
             ev.reason ? ` – ${ev.reason}` : ''
           }`,
           raw: ev,
           kind: 'system',
+          source,
+        });
+      } else if (ev.type === 'handoff_suggestion') {
+        msgs.push({
+          id: `handoff_suggestion:${ev.seq}`,
+          role: 'system',
+          text: `Handoff suggested → ${ev.agent_id}${
+            ev.reason ? ` – ${ev.reason}` : ''
+          }`,
+          raw: ev,
+          kind: 'system',
+          source,
+        });
+      } else if (ev.type === 'tool_call') {
+        const tname = ev?.data?.tool || ev.tool_name || ev.name || '';
+        msgs.push({
+          id: `tool_call:${ev.seq}`,
+          role: 'tool',
+          text: ev?.data?.args ? JSON.stringify(ev.data.args) : '',
+          raw: ev,
+          kind: 'tool',
+          toolName: tname,
+          toolData: ev.data,
+          source,
+        });
+      } else if (ev.type === 'tool_result') {
+        const tname = ev?.data?.tool || ev.tool_name || ev.name || '';
+        msgs.push({
+          id: `tool_result:${ev.seq}`,
+          role: 'tool',
+          text: typeof ev.text === 'string' ? ev.text : extractText(ev),
+          raw: ev,
+          kind: 'tool',
+          toolName: tname,
+          toolData: ev.data,
           source,
         });
       } else if (ev.type === 'message') {

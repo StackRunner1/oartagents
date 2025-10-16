@@ -10,6 +10,7 @@ export interface ToolsPanelProps {
   events?: any[];
   // Show the built-in Tool Calls section (defaults to false; we now use a dedicated panel)
   showCallsSection?: boolean;
+  scenarioId?: string;
 }
 
 export const ToolsPanel: React.FC<ToolsPanelProps> = ({
@@ -20,6 +21,7 @@ export const ToolsPanel: React.FC<ToolsPanelProps> = ({
   onError,
   events = [],
   showCallsSection = false,
+  scenarioId = 'default',
 }) => {
   const [toolBusy, setToolBusy] = React.useState<string | null>(null);
   const [toolResult, setToolResult] = React.useState<any | null>(null);
@@ -29,6 +31,60 @@ export const ToolsPanel: React.FC<ToolsPanelProps> = ({
     at: string;
   } | null>(null);
   const [showCalls, setShowCalls] = React.useState(true);
+  const [catalogOpen, setCatalogOpen] = React.useState(false);
+  const [toolCatalog, setToolCatalog] = React.useState<
+    { name: string; description?: string | null; params?: any }[]
+  >([]);
+  const [agentTools, setAgentTools] = React.useState<string[]>([]);
+
+  // Fetch the global tools list with descriptions for display
+  React.useEffect(() => {
+    let alive = true;
+    async function fetchCatalog() {
+      try {
+        const r = await fetch(`${baseUrl}/api/tools/list`);
+        const data = await r.json();
+        if (!r.ok) throw new Error(data?.error || 'failed to load tools');
+        if (alive) setToolCatalog(data || []);
+      } catch (e) {
+        // Non-fatal; ignore
+      }
+    }
+    fetchCatalog();
+    return () => {
+      alive = false;
+    };
+  }, [baseUrl]);
+
+  // Fetch per-agent catalog to discover agents-as-tools for the active agent
+  React.useEffect(() => {
+    let alive = true;
+    async function fetchAgentTools() {
+      try {
+        const r = await fetch(
+          `${baseUrl}/api/tools/catalog?scenario_id=${encodeURIComponent(
+            scenarioId
+          )}`
+        );
+        const data = await r.json();
+        if (r.ok && Array.isArray(data)) {
+          const aName = (activeAgentName || '').toLowerCase();
+          const entry = data.find(
+            (x: any) => (x.agent || '').toLowerCase() === aName
+          );
+          if (alive) setAgentTools(entry?.agent_tools || []);
+        } else if (alive) {
+          setAgentTools([]);
+        }
+      } catch {
+        if (alive) setAgentTools([]);
+      }
+    }
+    fetchAgentTools();
+    return () => {
+      alive = false;
+    };
+  }, [baseUrl, activeAgentName]);
 
   // Group tool_call + tool_result by seq proximity and tool name
   const groupedCalls = React.useMemo(() => {
@@ -130,6 +186,138 @@ export const ToolsPanel: React.FC<ToolsPanelProps> = ({
             {tool}
           </button>
         ))}
+      </div>
+
+      {/* Agents-as-Tools (read-only) */}
+      <div className="pt-2 border-t border-gray-800">
+        <div className="flex items-center justify-between mb-1">
+          <h4 className="text-[12px] font-semibold text-indigo-300">
+            Agents-as-Tools
+          </h4>
+          <span className="text-[10px] text-gray-500">invoked by LLM</span>
+        </div>
+        {agentTools.length === 0 ? (
+          <div className="text-[11px] text-gray-500">None</div>
+        ) : (
+          <div className="flex flex-wrap gap-2">
+            {agentTools.map((n) => (
+              <span
+                key={n}
+                className="text-[11px] px-2 py-1 rounded border border-gray-700 bg-gray-900/60 text-indigo-200"
+                title="Exposed as a tool to this agent at runtime">
+                {n}
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Catalog (read-only) */}
+      <div className="pt-2 border-t border-gray-800">
+        <div className="flex items-center justify-between mb-1">
+          <h4 className="text-[12px] font-semibold text-indigo-300">Catalog</h4>
+          <button
+            onClick={() => setCatalogOpen((v) => !v)}
+            className="text-[10px] text-gray-400 hover:text-gray-200">
+            {catalogOpen ? 'Hide' : 'Show'}
+          </button>
+        </div>
+        {catalogOpen && (
+          <ul className="space-y-2 max-h-40 overflow-auto pr-1">
+            {toolCatalog.length === 0 ? (
+              <li className="text-[11px] text-gray-500">No tools</li>
+            ) : (
+              toolCatalog.map((t) => {
+                const enabled = allowedTools.includes(t.name);
+                return (
+                  <li
+                    key={t.name}
+                    className="bg-gray-950 border border-gray-800 rounded p-2">
+                    <div className="flex items-center justify-between">
+                      <div className="text-[12px] text-indigo-100">
+                        {t.name}
+                      </div>
+                      <button
+                        disabled={!enabled || !sessionId || toolBusy === t.name}
+                        onClick={async () => {
+                          // Run only if enabled for this agent
+                          if (!enabled) return;
+                          onError('');
+                          setToolResult(null);
+                          setToolBusy(t.name);
+                          try {
+                            const r = await fetch(
+                              `${baseUrl}/api/tools/execute?scenario_id=default&session_id=${encodeURIComponent(
+                                sessionId
+                              )}`,
+                              {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                  tool: t.name,
+                                  args: { agent: activeAgentName },
+                                }),
+                              }
+                            );
+                            const data = await r.json();
+                            if (!r.ok)
+                              throw new Error(data?.error || 'tool failed');
+                            setToolResult(data);
+                            setLastToolStatus({
+                              tool: t.name,
+                              ok: true,
+                              at: new Date().toISOString(),
+                            });
+                          } catch (e: any) {
+                            onError(e.message);
+                            setLastToolStatus({
+                              tool: t.name,
+                              ok: false,
+                              at: new Date().toISOString(),
+                            });
+                          } finally {
+                            setToolBusy(null);
+                          }
+                        }}
+                        className={`text-[10px] px-2 py-1 rounded border ${
+                          enabled
+                            ? 'border-gray-700 hover:bg-gray-800 text-gray-300'
+                            : 'border-gray-800 bg-gray-900/50 text-gray-500 cursor-not-allowed'
+                        }`}>
+                        {enabled ? 'Run' : 'Disabled'}
+                      </button>
+                    </div>
+                    {t.description && (
+                      <div className="mt-1 text-[11px] text-gray-400">
+                        {t.description}
+                      </div>
+                    )}
+                  </li>
+                );
+              })
+            )}
+          </ul>
+        )}
+        {/* Agents-as-tools for this agent (read-only, invoked by LLM) */}
+        {catalogOpen && (
+          <div className="mt-2">
+            <div className="text-[11px] text-gray-400 mb-1">Agent Tools</div>
+            {agentTools.length === 0 ? (
+              <div className="text-[11px] text-gray-500">None</div>
+            ) : (
+              <div className="flex flex-wrap gap-1">
+                {agentTools.map((n) => (
+                  <span
+                    key={n}
+                    className="text-[10px] px-2 py-0.5 rounded border border-gray-800 bg-gray-900/60 text-indigo-200"
+                    title="Exposed as a tool to this agent at runtime">
+                    {n}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </div>
       {lastToolStatus && (
         <div

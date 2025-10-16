@@ -4,6 +4,7 @@ import {
   computeStreaming,
   ChatMessage,
 } from '../../lib/chat';
+import { ToolOutputCard } from './ToolOutputCard';
 
 export interface ChatPanelProps {
   events: any[];
@@ -15,6 +16,7 @@ export interface ChatPanelProps {
   input: string;
   setInput: (v: string) => void;
   onSend: () => void;
+  onToolAction?: (action: { kind: string; payload?: any }) => void;
   handoffEvents?: {
     id: string;
     from: string;
@@ -34,6 +36,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   input,
   setInput,
   onSend,
+  onToolAction,
   handoffEvents = [],
 }) => {
   const chatMessages: ChatMessage[] = useMemo(() => {
@@ -72,37 +75,52 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         {chatMessages.length === 0 && (
           <div className="text-gray-600 text-xs">No messages yet.</div>
         )}
-        {chatMessages.map((m) => (
-          <div
-            key={m.id}
-            className={`flex ${
-              m.kind === 'user' ? 'justify-end' : 'justify-start'
-            }`}>
-            <div
-              className={`group relative max-w-[75%] rounded-md px-3 py-2 text-sm leading-snug shadow-sm whitespace-pre-wrap break-words ${
-                m.kind === 'user'
-                  ? 'bg-teal-600/80 text-white'
-                  : m.kind === 'assistant'
-                  ? 'bg-gray-800 text-gray-100'
-                  : 'bg-indigo-800/40 text-indigo-100'
-              }`}
-              title={m.role}>
-              <span
-                className={`inline-block align-middle text-[9px] font-medium tracking-wide mr-2 px-1.5 py-0.5 rounded ${
-                  m.source === 'realtime'
-                    ? 'bg-purple-600/30 text-purple-200 border border-purple-500/40'
-                    : 'bg-sky-600/30 text-sky-200 border border-sky-500/40'
-                }`}>
-                {m.source === 'realtime' ? 'RT' : 'SDK'}
-              </span>
-              {m.text ? (
-                <>{m.text}</>
+        {chatMessages.map((m) => {
+          const wrapperClass = `flex ${
+            m.kind === 'user' ? 'justify-end' : 'justify-start'
+          }`;
+          const bubbleClass =
+            m.kind === 'user'
+              ? 'bg-teal-600/80 text-white'
+              : m.kind === 'assistant'
+              ? 'bg-gray-800 text-gray-100'
+              : 'bg-indigo-800/40 text-indigo-100';
+          const tagClass =
+            m.source === 'realtime'
+              ? 'bg-purple-600/30 text-purple-200 border border-purple-500/40'
+              : 'bg-sky-600/30 text-sky-200 border border-sky-500/40';
+          return (
+            <div key={m.id} className={wrapperClass}>
+              {m.kind === 'tool' ? (
+                <div className="max-w-[75%]">
+                  <ToolOutputCard
+                    toolName={m.toolName || 'tool'}
+                    text={m.text}
+                    data={m.toolData}
+                    onAction={(action) => onToolAction?.(action)}
+                    compact
+                  />
+                </div>
               ) : (
-                <span className="opacity-50 italic">(no textual content)</span>
+                <div
+                  className={`group relative max-w-[75%] rounded-md px-3 py-2 text-sm leading-snug shadow-sm whitespace-pre-wrap break-words ${bubbleClass}`}
+                  title={m.role}>
+                  <span
+                    className={`inline-block align-middle text-[9px] font-medium tracking-wide mr-2 px-1.5 py-0.5 rounded ${tagClass}`}>
+                    {m.source === 'realtime' ? 'RT' : 'SDK'}
+                  </span>
+                  {m.text ? (
+                    <>{m.text}</>
+                  ) : (
+                    <span className="opacity-50 italic">
+                      (no textual content)
+                    </span>
+                  )}
+                </div>
               )}
             </div>
-          </div>
-        ))}
+          );
+        })}
         {handoffEvents.map((h) => (
           <div key={h.id} className="flex justify-start">
             <div className="max-w-[75%] rounded-md px-3 py-2 text-xs bg-indigo-900/40 text-indigo-200 border border-indigo-800">

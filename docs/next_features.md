@@ -6,40 +6,33 @@
 
 ## Primary Features to implement next
 
-[x] Assistant message rendering: tighten fallback paths and formatting [~]
-Handoff/agent indicators: show when the orchestrator suggests a root change +
-highlight active agent + the tools it has available (in Tools component) [~]
-Improve multi-agent orchestration based on official docs
-(https://openai.github.io/openai-agents-python/multi_agent/) — LLM-only via SDK
-handoff [x] Tool call visibility: clearer grouping, collapsible details <=
-CRITICAL NOW [ ] Optimistic rendering of user messages [x] Implement Context
-Management based on official documentation
-(https://openai.github.io/openai-agents-python/context/) <= CRITICAL [ ]
-Implement basic Guardrails, making it reusable/extensable in future - based on
-official docs (https://openai.github.io/openai-agents-python/guardrails/) [ ]
-Build a new Agent and integrate it into the registry; enable built-in tools
-(WebSearch, Code Interpreter) where safe [ ] Event stream UX: smoother
-auto-scroll, timestamps, compact system/tool events [ ] Transcript refresh:
-explicit sync button and smarter auto-refresh [ ] Retry/send state: disable send
-during in-flight, show retry on error
+- [x] Assistant message rendering: tighten fallback paths and formatting
+- [~] Handoff/agent indicators: show root-change suggestions, highlight active agent, and surface allowed tools
+- [x] Improve multi-agent orchestration (LLM-only native handoffs per official docs)
+- [x] Tool call visibility: clearer grouping, collapsible details
+- [x] Optimistic rendering of user messages (with reconciliation)
+- [x] Context Management per official documentation (session context API and injection)
+- [ ] Implement basic Guardrails (reusable, per official docs)
+- [~] Build a new Agent and enable built-in tools (WebSearch on; Code Interpreter gated)
+- [~] Event stream UX: smoother auto-scroll, timestamps, compact system/tool events
+- [ ] Transcript refresh: explicit sync button and smarter auto-refresh
+- [ ] Retry/send state: disable send during in-flight, show retry on error
 
 ## Implementation Task Checklist: Assistant message rendering: tighten fallback paths and formatting
 
-- implemented without a detailed plan and task checklist
+- [x] Harden SDK imports and session fallback paths
+- [x] Guard model selection (avoid realtime in text flows)
+- [x] Ensure assistant event always appended; robust text extraction
 
 ## Implementation Task Checklist: Handoff/agent indicators
 
-- [x] Define UI goals: inline system message and header badge when orchestrator
-      suggests a root change
+- [x] Define UI goals: inline system message and header badge when orchestrator suggests a root change
 - [x] Extend ChatPanel props to accept `handoffEvents`
-- [x] Render a compact header badge showing the latest suggested target
-      (e.g.,"Handoff: Sales")
-- [x] Append inline system messages in the chat body for each suggestion:
-      `from → to — reason`
+- [x] Render a compact header badge showing the latest suggested target (e.g., "Handoff: Sales")
+- [x] Append inline system messages in the chat body for each suggestion: `from → to — reason`
 - [x] Wire handoff events state from sdkTest to ChatPanel
-- [ ] TODO: sort-merge with chronological chat messages (by `at`) instead of
-      append-only
-- [ ] Optional: action buttons to apply handoff (switch agent) or dismiss
+- [ ] Sort-merge handoff messages chronologically into chat stream (by `at`) — currently shown in a dedicated section
+- [x] Action buttons to Apply/Dismiss (Apply switches agent immediately)
 
 ## New platform-aligned tasks (from main app context)
 
@@ -110,10 +103,9 @@ Rationale
 
 Acceptance criteria
 
-- Handoff events are emitted without the custom supervisor tool.
-- The LLM chooses a target agent using native handoffs and we persist the active
-  agent with reason.
-- Handoff prompt is consistently present on all agents with handoffs.
+- [x] Handoff events are emitted without the custom supervisor tool
+- [x] The LLM chooses a target agent using native handoffs and we persist the active agent with reason
+- [x] Handoff prompt is consistently present on all agents with handoffs
 
 ### Agents-as-tools (subroutine calls without control transfer)
 
@@ -125,8 +117,7 @@ Acceptance criteria
 
 Acceptance criteria
 
-- At least one example agent is wired as a tool and invoked by the orchestrator
-  for a subtask; control returns to the orchestrator.
+- [ ] At least one example agent is wired as a tool and invoked by the orchestrator for a subtask; control returns to the orchestrator
 
 ### ToolContext / RunContextWrapper and dynamic gating
 
@@ -142,10 +133,8 @@ Acceptance criteria
 
 Acceptance criteria
 
-- Tools can read `ctx.context` fields (e.g., project_id) and conditionally
-  enable behavior.
-- A protected tool is hidden for non-admin sessions (verified in the Tool Calls
-  panel / logs).
+- [x] Tools can read `ctx.context` fields (e.g., project_id) and conditionally enable behavior
+- [x] A protected tool is hidden for non-admin sessions (verified in Tool Calls / logs)
 
 ### Tool library design and discovery
 
@@ -162,9 +151,8 @@ Acceptance criteria
 
 Acceptance criteria
 
-- Catalog lists tools with metadata; UI (or logs) shows which tools are
-  available to the active agent/session.
-- Discovery tool returns relevant tools when prompted (optional, behind a flag).
+- [x] Catalog lists tools with metadata; UI shows which tools are available to the active agent/session
+- [ ] Discovery tool returns relevant tools when prompted (optional, behind a flag)
 
 ### Rename "scenarios" to "agent_groups"
 
@@ -177,8 +165,7 @@ Acceptance criteria
 
 Acceptance criteria
 
-- Code and docs use "agent groups" terminology; FE still works via the
-  compatibility shim.
+- [ ] Code and docs use "agent groups" terminology; FE still works via the compatibility shim
 
 ### UI updates & observability
 
@@ -193,81 +180,66 @@ Acceptance criteria
 
 Acceptance criteria
 
-- Tool Calls are clearer and separated from the actions list.
-- Handoff actions work and update active agent immediately.
+- [x] Tool Calls are clearer and separated from the actions list
+- [x] Handoff actions work and update active agent immediately
 
 ### Phased implementation plan
 
-Phase 1 (this sprint)
+Phase 1
 
-- Native handoffs for existing agents (General/Sales/Support) with recommended
-  prompt.
-- [x] Add ToolContext/RunContextWrapper support in tools; add
-      `POST /api/sdk/session/context` and inject into runs.
-- [x] Implement `is_enabled` dynamic gating for at least one tool (roles-based)
-      and wire gating in tool resolution.
-- [x] Move Tool Calls to dedicated card; add basic Apply/Dismiss wiring (UI
-      shell).
+- [x] Native handoffs for existing agents (General/Sales/Support) with recommended prompt
+- [x] Add ToolContext/RunContextWrapper support in tools; add `POST /api/sdk/session/context` and inject into runs
+- [x] Implement `is_enabled` dynamic gating for at least one tool (roles-based) and wire gating in tool resolution
+- [x] Move Tool Calls to dedicated card; add basic Apply/Dismiss wiring (UI shell)
 
 Phase 2
 
-- Agents-as-tools example (e.g., a summarizer or translator agent) with
-  `custom_output_extractor`.
-- Tool discovery endpoint and optional discovery tool.
-- Migrate "scenarios" to "agent_groups" (keep shim), and begin defining 1-2
-  additional groups (e.g., Admin-Content).
+- [ ] Agents-as-tools example (e.g., a summarizer or translator agent) with `custom_output_extractor`
+- [ ] Tool discovery endpoint and optional discovery tool
+- [ ] Migrate "scenarios" to "agent_groups" (keep shim), and begin defining 1-2 additional groups (e.g., Admin-Content)
 
 Phase 3
 
-- Introduce code-based orchestration for select flows and combine with LLM-only
-  routing.
-- Expand tool library structure with namespaces, metadata, and tests.
-- Harden permissions and rate limits; add guardrails integration per docs.
+- [ ] Introduce code-based orchestration for select flows and combine with LLM-only routing
+- [ ] Expand tool library structure with namespaces, metadata, and tests
+- [ ]Harden permissions and rate limits; add guardrails integration per docs
 
 ### Detailed task checklist (executable)
 
 Handoffs (native)
 
-- [ ] Replace supervisor custom handoff tool with native `Agent.handoffs` for
-      existing agents.
-- [ ] Apply `handoff_prompt` to all handoff-capable agents.
-- [ ] Add `on_handoff` callback to log reason and target; consider `input_type`
-      for structured reasons.
-- [ ] Optionally apply `input_filter` (e.g., remove tools) from
-      `agents.extensions.handoff_filters`.
+- [x] Replace supervisor custom handoff tool with native `Agent.handoffs` for existing agents
+- [x] Apply `handoff_prompt` to all handoff-capable agents
+- [x] Add `on_handoff` callback to log reason and target; consider `input_type` for structured reasons
+- [ ] Optionally apply `input_filter` (e.g., remove tools) from `agents.extensions.handoff_filters`
 
 Agents-as-tools
 
-- [ ] Create at least one example specialized agent exposed via `as_tool(...)`
-      to the orchestrator.
-- [ ] Optionally add `custom_output_extractor` to return structured payloads.
+- [ ] Create at least one example specialized agent exposed via `as_tool(...)` to the orchestrator
+- [ ] Optionally add `custom_output_extractor` to return structured payloads
 
 Context + ToolContext
 
-- [x] Add `POST /api/sdk/session/context`; persist to store; pass into
-      `Runner.run`.
-- [x] Update tools to accept `ctx` and use `ctx.context` fields.
-- [x] Implement `is_enabled`/roles gating on registry tools based on context
-      roles/flags.
+- [x] Add `POST /api/sdk/session/context`; persist to store; pass into `Runner.run`
+- [x] Update tools to accept `ctx` and use `ctx.context` fields
+- [x] Implement `is_enabled`/roles gating on registry tools based on context roles/flags
 
 Tool library & discovery
 
-- [ ] Introduce folder structure and typed param models; enforce strict schemas.
-- [ ] Add `GET /api/tools/catalog` and (optional) `search_tools` function tool.
+- [ ] Introduce folder structure and typed param models; enforce strict schemas
+- [x] Add `GET /api/tools/catalog`; (optional) `search_tools` function tool pending
 
 Rename scenarios → agent_groups
 
-- [ ] Add new `AgentGroupDefinition` and back-compat shim for `scenario_id`.
-- [ ] Update docs and references; postpone FE param rename to a later PR.
+- [ ] Add new `AgentGroupDefinition` and back-compat shim for `scenario_id`
+- [ ] Update docs and references; postpone FE param rename to a later PR
 
 UI & UX
 
-- [x] Split Tool Calls into its own card; show currently available tools for the
-      active agent.
-- [x] Handoff Apply/Dismiss buttons; ensure chronological merge with chat
-      messages. (chronological merge still pending)
-- [x] Move Agent Graph into a new right column; widen page if needed.
-- [x] Place Handoff Actions directly below chat.
+- [x] Split Tool Calls into its own card; show currently available tools for the active agent
+- [x] Handoff Apply/Dismiss buttons; chronological merge still pending
+- [x] Move Agent Graph into a new right column; widen page if needed
+- [x] Place Handoff Actions directly below chat
 
 ### Acceptance criteria (summary)
 
@@ -279,6 +251,31 @@ UI & UX
   calls/results.
 - Terminology migrated to agent groups with a temporary shim; UI remains
   functional.
+
+## Scenarios → Agent Groups: recommended sequence
+
+1) Introduce AgentGroupDefinition alongside ScenarioDefinition (compat layer)
+- Add `AgentGroupDefinition` with fields: `id`, `label`, `description`, `default_root`, `agents`
+- Keep existing `scenario_id` query params; internally map `scenario_id` to a group via a shim
+- Extend registry to hold both (`agent_groups` as the primary source; `scenarios` becomes an alias)
+
+2) Context-driven mounting and dynamic equipping
+- At session create, derive `agent_group_id` from app context (route: page/projects/[projectId], user role)
+- Inject `app_location`, `project_id`, `org_id`, `roles` into session context
+- Use `is_enabled(ctx)` to gate tools and agents-as-tools; mount the correct group and toolset dynamically
+
+3) Catalog expansion and discovery
+- Expand `/api/tools/catalog` to include metadata (tags, roles_required, cost hints); add grouping by agent group
+- Add optional `GET /api/tools/search?query=` and an LLM discovery tool (behind a feature flag)
+
+4) Gradual FE migration
+- Update UI labels to say "Agent Group"; keep using `scenario_id` under the hood
+- Introduce a switcher UI for selecting agent groups per context (later)
+
+5) Finalize migration
+- Deprecate `scenarios` naming in code after FE fully migrated; keep shim for at least one release
+
+Rationale: This path lets us integrate new functionality (catalog, dynamic equipping, agents-as-tools) immediately while moving terminology and APIs safely, preserving current FE and preparing for export to the main app.
 
 ## Next batch of tasks (proposed)
 
@@ -296,9 +293,8 @@ UI & UX
 
 3. Agents-as-tools example and discovery
 
-- Add one minimal agent-as-tool (e.g., summarizer) wired to orchestrator via
-  `as_tool`
-- Create `GET /api/tools/catalog` and surface available tools in ToolsPanel
+- Add one minimal agent-as-tool (e.g., summarizer) wired to orchestrator via `as_tool`
+- [x] Create `GET /api/tools/catalog` and surface available tools in ToolsPanel
 
 4. Rename scenarios → agent_groups (shim)
 

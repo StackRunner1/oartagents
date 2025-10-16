@@ -81,6 +81,14 @@ from .tools import tool_registry
 # In-memory map of active sessions to SQLiteSession objects (file-backed optional later)
 # SQLiteSession may be unavailable; store as generic values
 _session_cache: Dict[str, Any] = {}
+# Optional allowlist for agent-as-tools: { agent_name: [roles...] }
+# If an entry exists for an agent, that agent-as-tool will only be enabled when
+# the session context roles intersect this set. Leave empty for permissive mode.
+AGENT_TOOL_ROLE_ALLOWLIST: Dict[str, list[str]] = {
+    # Example:
+    # "summarizer": ["agents", "assistant", "supervisor"],
+    # "sales": ["supervisor", "general", "agents"],
+}
 
 
 class _MinimalSession:
@@ -235,7 +243,13 @@ def build_agent_network_for_viz(scenario_id: str, root_agent: str | None = None)
     # Pre-create all agents without handoffs, then wire handoffs referencing instances
     name_to_agent: Dict[str, Any] = {}
     for ad in sc.agents:
-        tools = _resolve_agent_tools(ad.tools)
+        # For visualization, use a permissive context so role-gated tools appear
+        tools = _resolve_agent_tools(
+            ad.tools,
+            session_context={
+                "roles": [ad.name, "agents", "assistant", "sales", "support", "general"]
+            },
+        )
         prov = _build_model_provider(ad.model)
         instructions = ad.instructions
         try:
@@ -316,6 +330,51 @@ def build_agent_network_for_viz(scenario_id: str, root_agent: str | None = None)
     if root_agent_obj is None and name_to_agent:
         # Fallback to first agent defined
         root_agent_obj = next(iter(name_to_agent.values()))
+
+    # Also expose agents-as-tools to the orchestrator for visualization parity
+    try:
+        orchestrator_name = sc.default_root
+        sup = next(
+            (
+                a.name
+                for a in sc.agents
+                if getattr(a, "role", "").lower() == "supervisor"
+            ),
+            None,
+        )
+        if sup:
+            orchestrator_name = sup
+        orch = name_to_agent.get(orchestrator_name)
+        if orch is not None:
+            extra_tools = []
+            for ad in sc.agents:
+                if ad.name == orchestrator_name:
+                    continue
+                tgt = name_to_agent.get(ad.name)
+                if not tgt:
+                    continue
+                try:
+                    extra_tools.append(
+                        tgt.as_tool(
+                            tool_name=f"{ad.name}_agent_tool",
+                            tool_description=f"Call the {ad.name} agent for a subtask and return the result.",
+                            # Visualization: show all agent-tools
+                            is_enabled=lambda *_args, **_kwargs: True,
+                        )
+                    )
+                except Exception:
+                    pass
+            if extra_tools:
+                base = orch
+                name_to_agent[orchestrator_name] = Agent(
+                    name=base.name,
+                    instructions=base.instructions,
+                    model=base.model,
+                    tools=list(base.tools or []) + extra_tools,
+                    handoffs=getattr(base, "handoffs", None),
+                )
+    except Exception:
+        pass
     return root_agent_obj, name_to_agent
 
 
@@ -341,7 +400,13 @@ def build_agent_network_for_runtime(scenario_id: str, session_id: str | None = N
     # First pass: create agents with tools and (if applicable) handoff prompt
     name_to_agent: Dict[str, Any] = {}
     for ad in sc.agents:
-        tools = _resolve_agent_tools(ad.tools, session_context=session_context)
+        # Enrich context roles per-agent so role-gated tools (e.g., product_search for Sales) are enabled
+        ctx_roles = set((session_context.get("roles") or []))
+        ctx_roles.update(
+            {ad.name, getattr(ad, "role", "") or "", "agents", "assistant"}
+        )
+        per_agent_ctx = {**session_context, "roles": list({r for r in ctx_roles if r})}
+        tools = _resolve_agent_tools(ad.tools, session_context=per_agent_ctx)
         prov = _build_model_provider(ad.model)
         instructions = ad.instructions
         try:
@@ -380,7 +445,8 @@ def build_agent_network_for_runtime(scenario_id: str, session_id: str | None = N
                             Event(
                                 session_id=sid,
                                 seq=seq,
-                                type="handoff",
+                                # Suggestion emitted by the SDK (not yet applied)
+                                type="handoff_suggestion",
                                 role="system",
                                 agent_id=target,
                                 text=None,
@@ -440,8 +506,21 @@ def build_agent_network_for_runtime(scenario_id: str, session_id: str | None = N
                     continue
 
                 def _is_enabled(ctx: Any | None = None, agent_name: str = ad.name):
+                    """Gate agent-as-tool availability by session context roles.
+                    Defaults to enabled when no roles are provided to make the
+                    feature work out-of-the-box; can be restricted by setting
+                    context.roles to a list that omits the agent name and the
+                    special "agents" flag.
+                    """
                     try:
                         roles = set(((ctx or {}).get("roles") or []))
+                        # If there's a specific allowlist configured for this agent, enforce it
+                        allow = AGENT_TOOL_ROLE_ALLOWLIST.get(agent_name)
+                        if isinstance(allow, list) and allow:
+                            return bool(roles.intersection(set(allow)))
+                        # If no roles provided, default to enabled for better UX
+                        if not roles:
+                            return True
                         return agent_name in roles or "agents" in roles
                     except Exception:
                         return True
@@ -741,15 +820,76 @@ async def run_agent_turn(
                 res_tool = (
                     getattr(i, "tool_name", None) or getattr(i, "name", None) or tname
                 )
+                # Optional specialized shaping for agent-as-tool outputs, especially summarizer
+                text_out = None
+                extra: Dict[str, Any] = {}
+                try:
+                    # Summarizer agent-as-tool uses tool name like "summarizer_agent_tool"
+                    if isinstance(res_tool, str) and res_tool.lower().startswith(
+                        "summarizer_"
+                    ):
+                        # Try to parse structured JSON first
+                        raw = tout
+                        parsed = None
+                        if isinstance(raw, str):
+                            import json as _json  # local import to avoid overhead when unused
+
+                            try:
+                                parsed = _json.loads(raw)
+                            except Exception:
+                                parsed = None
+                        elif isinstance(raw, (dict, list)):
+                            parsed = raw
+                        # Build a concise text if we have structured fields
+                        if isinstance(parsed, dict):
+                            summ = (
+                                parsed.get("summary")
+                                or parsed.get("synopsis")
+                                or parsed.get("brief")
+                            )
+                            bullets = parsed.get("bullets") or parsed.get("key_points")
+                            if isinstance(bullets, list):
+                                bullets_txt = "\n".join(
+                                    [
+                                        f"• {str(b).strip()}"
+                                        for b in bullets
+                                        if str(b).strip()
+                                    ]
+                                )
+                            else:
+                                bullets_txt = None
+                            pieces = []
+                            if isinstance(summ, str) and summ.strip():
+                                pieces.append(summ.strip())
+                            if bullets_txt:
+                                pieces.append(bullets_txt)
+                            if pieces:
+                                text_out = "\n".join(pieces)
+                                extra["parsed"] = parsed
+                        # If still no text_out, try to extract bullets from plain text
+                        if not text_out:
+                            s = raw if isinstance(raw, str) else str(raw)
+                            # Keep it concise
+                            text_out = s.strip()
+                    # Default path for other tools
+                    if text_out is None:
+                        text_out = str(tout)
+                except Exception:
+                    text_out = str(tout)
+                # Cap very long outputs for UI safety; raw is preserved in extra if parsed
+                safe_text = (text_out or "")[:4000]
+                data_payload = {"tool": res_tool}
+                if extra:
+                    data_payload["extra"] = extra
                 evr = Event(
                     session_id=session_id,
                     seq=seq,
                     type="tool_result",
                     role="tool",
                     agent_id=name,
-                    text=str(tout)[:4000],
+                    text=safe_text,
                     final=True,
-                    data={"tool": res_tool},
+                    data=data_payload,
                     timestamp_ms=int(time.time() * 1000),
                 )
                 store.append_event(session_id, evr)
@@ -987,81 +1127,21 @@ async def run_supervisor_orchestrate(
                 pass
         return {"chosen_root": chosen, "reason": reason, "changed": changed}
     if not sup:
-        # Fallback heuristic
-        text = (last_user_text or "").lower()
-
-        def pick_agent() -> str:
-            if any(
-                k in text
-                for k in [
-                    "buy",
-                    "price",
-                    "recommend",
-                    "product",
-                    "catalog",
-                    "purchase",
-                    "ticket",
-                ]
-            ):
-                return (
-                    "sales"
-                    if any(a.name == "sales" for a in sc.agents)
-                    else sc.default_root
-                )
-            if any(
-                k in text
-                for k in [
-                    "error",
-                    "issue",
-                    "problem",
-                    "troubleshoot",
-                    "not working",
-                    "help",
-                ]
-            ):
-                return (
-                    "support"
-                    if any(a.name == "support" for a in sc.agents)
-                    else sc.default_root
-                )
-            return sc.default_root
-
-        chosen = pick_agent()
-        changed = False
-        reason = "heuristic_router"
-        if session_id:
-            try:
-                sess = store.get_session(session_id)
-                if not sess:
-                    store.create_session(session_id, active_agent_id=chosen)
-                    sess = store.get_session(session_id)
-                if sess and sess.active_agent_id != chosen:
-                    changed = True
-                    store.set_active_agent(session_id, chosen)
-                    seq = store.next_seq(session_id)
-                    ev = Event(
-                        session_id=session_id,
-                        seq=seq,
-                        type="handoff",
-                        role="system",
-                        agent_id=chosen,
-                        text=None,
-                        final=True,
-                        reason=reason,
-                        timestamp_ms=int(time.time() * 1000),
-                    )
-                    store.append_event(session_id, ev)
-            except Exception:
-                pass
-        return {"chosen_root": chosen, "reason": reason, "changed": changed}
+        # LLM-only mode: no supervisor => do not change active agent here.
+        return {
+            "chosen_root": sc.default_root,
+            "reason": "no_supervisor",
+            "changed": False,
+        }
 
     # Build supervisor with a `handoff` function tool
     decision: Dict[str, Any] = {"target": sc.default_root, "reason": "no_call"}
     try:
+        valid_targets = [a.name for a in sc.agents]
 
         def handoff(target: str, reason: str | None = None):
             nonlocal decision
-            valid = {a.name for a in sc.agents}
+            valid = set(valid_targets)
             if target not in valid:
                 decision = {
                     "target": decision.get("target", sc.default_root),
@@ -1076,7 +1156,9 @@ async def run_supervisor_orchestrate(
             "properties": {
                 "target": {
                     "type": "string",
-                    "description": "Agent name to activate",
+                    "description": "Agent name to activate (one of: %s)"
+                    % ", ".join(valid_targets),
+                    "enum": valid_targets,
                 },
                 "reason": {"type": "string"},
             },
@@ -1158,50 +1240,13 @@ async def run_supervisor_orchestrate(
     chosen = decision.get("target", sc.default_root)
     reason = decision.get("reason", "supervisor_default")
 
-    # If supervisor didn't call the handoff tool, use heuristic as a fallback guidance
+    # If supervisor didn't call the handoff tool, do not change active agent.
     if reason == "no_call":
-        text = (last_user_text or "").lower()
-
-        def pick_agent() -> str:
-            if any(
-                k in text
-                for k in [
-                    "buy",
-                    "price",
-                    "recommend",
-                    "product",
-                    "catalog",
-                    "purchase",
-                    "ticket",
-                ]
-            ):
-                return (
-                    "sales"
-                    if any(a.name == "sales" for a in sc.agents)
-                    else sc.default_root
-                )
-            if any(
-                k in text
-                for k in [
-                    "error",
-                    "issue",
-                    "problem",
-                    "troubleshoot",
-                    "not working",
-                    "help",
-                ]
-            ):
-                return (
-                    "support"
-                    if any(a.name == "support" for a in sc.agents)
-                    else sc.default_root
-                )
-            return sc.default_root
-
-        heuristic = pick_agent()
-        if heuristic != chosen:
-            chosen = heuristic
-            reason = "supervisor_no_call_heuristic"
+        return {
+            "chosen_root": sc.default_root,
+            "reason": "supervisor_no_call",
+            "changed": False,
+        }
     changed = False
     if session_id:
         try:

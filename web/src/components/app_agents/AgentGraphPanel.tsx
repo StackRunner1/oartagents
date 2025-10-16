@@ -5,6 +5,8 @@ export interface AgentGraphPanelProps {
   scenarioId?: string;
   rootAgent?: string;
   containerClassName?: string; // allow parent to size like Chat panel
+  // Optional hook: when this prop changes, trigger a refresh (e.g., after Apply handoff)
+  refreshKey?: string | number;
 }
 
 export const AgentGraphPanel: React.FC<AgentGraphPanelProps> = ({
@@ -12,11 +14,13 @@ export const AgentGraphPanel: React.FC<AgentGraphPanelProps> = ({
   scenarioId = 'default',
   rootAgent,
   containerClassName,
+  refreshKey,
 }) => {
   const [imgB64, setImgB64] = React.useState<string | null>(null);
-  const [format, setFormat] = React.useState<'png' | 'svg' | null>(null);
+  const [format, setFormat] = React.useState<'png' | 'svg'>('svg');
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  const [dotSrc, setDotSrc] = React.useState<string | null>(null);
 
   const refresh = React.useCallback(async () => {
     setLoading(true);
@@ -28,26 +32,32 @@ export const AgentGraphPanel: React.FC<AgentGraphPanelProps> = ({
         body: JSON.stringify({
           scenario_id: scenarioId,
           root_agent: rootAgent || null,
-          return_dot: false,
+          return_dot: true,
+          output_format: format,
         }),
       });
       const data = await r.json();
       if (!r.ok || !data?.ok)
         throw new Error(data?.detail || data?.error || 'viz failed');
       setImgB64(data.image_base64 || null);
-      setFormat((data.format as 'png' | 'svg') || 'png');
+      setDotSrc(data.dot_source || null);
     } catch (e: any) {
       setError(e.message);
       setImgB64(null);
-      setFormat(null);
+      setDotSrc(null);
     } finally {
       setLoading(false);
     }
-  }, [baseUrl, scenarioId, rootAgent]);
+  }, [baseUrl, scenarioId, rootAgent, format]);
 
   React.useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  // External trigger (e.g., after Apply handoff)
+  React.useEffect(() => {
+    if (typeof refreshKey !== 'undefined') void refresh();
+  }, [refreshKey]);
 
   return (
     <div
@@ -57,12 +67,41 @@ export const AgentGraphPanel: React.FC<AgentGraphPanelProps> = ({
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-semibold text-indigo-300">Agent Graph</h3>
         <div className="flex items-center gap-2">
+          <span className="text-[10px] text-gray-500">
+            {format.toUpperCase()}
+          </span>
+          <button
+            onClick={() => setFormat((f) => (f === 'svg' ? 'png' : 'svg'))}
+            className="text-[10px] px-2 py-1 rounded border border-gray-700 hover:bg-gray-800 text-gray-300"
+            disabled={loading}>
+            Toggle SVG/PNG
+          </button>
           <button
             onClick={() => void refresh()}
             className="text-[10px] px-2 py-1 rounded border border-gray-700 hover:bg-gray-800 text-gray-300 disabled:opacity-40"
             disabled={loading}>
             {loading ? 'Rendering...' : 'Refresh'}
           </button>
+          {imgB64 && (
+            <>
+              <a
+                href={`data:image/${format};base64,${imgB64}`}
+                download={`agent_graph.${format}`}
+                className="text-[10px] px-2 py-1 rounded border border-gray-700 hover:bg-gray-800 text-gray-300">
+                Download {format.toUpperCase()}
+              </a>
+              {dotSrc && (
+                <a
+                  href={`data:text/vnd.graphviz;charset=utf-8,${encodeURIComponent(
+                    dotSrc
+                  )}`}
+                  download="agent_graph.dot"
+                  className="text-[10px] px-2 py-1 rounded border border-gray-700 hover:bg-gray-800 text-gray-300">
+                  Download DOT
+                </a>
+              )}
+            </>
+          )}
         </div>
       </div>
       {error && <div className="text-[11px] text-amber-400">{error}</div>}

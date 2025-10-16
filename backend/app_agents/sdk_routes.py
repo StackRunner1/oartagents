@@ -480,6 +480,9 @@ class VizRequest(BaseModel):
         False,
         description="If true, include DOT source in response (no Graphviz needed)",
     )
+    output_format: str | None = Field(
+        None, description="Preferred output format: 'svg' or 'png'"
+    )
 
 
 @router.post("/sdk/agents/visualize")
@@ -559,18 +562,22 @@ async def visualize_agents(req: VizRequest):
             dot_payload = {"dot_source": dot_src}
         else:
             dot_payload = {}
-        # Prefer SVG for crisp scaling; fallback to PNG
+        # Prefer requested format; else SVG for crisp scaling; fallback to PNG
         try:
+            if getattr(req, "output_format", None) in {"png", "svg"}:
+                fmt = req.output_format
+                g.format = fmt  # type: ignore[attr-defined]
+                b = g.pipe(format=fmt)  # type: ignore[call-arg]
+                payload = base64.b64encode(b).decode("ascii")
+                return JSONResponse(
+                    {"ok": True, "format": fmt, "image_base64": payload, **dot_payload}
+                )
+            # Default try SVG first
             g.format = "svg"  # type: ignore[attr-defined]
             svg_bytes = g.pipe(format="svg")  # type: ignore[call-arg]
             payload = base64.b64encode(svg_bytes).decode("ascii")
             return JSONResponse(
-                {
-                    "ok": True,
-                    "format": "svg",
-                    "image_base64": payload,
-                    **dot_payload,
-                }
+                {"ok": True, "format": "svg", "image_base64": payload, **dot_payload}
             )
         except Exception as e_svg:
             try:

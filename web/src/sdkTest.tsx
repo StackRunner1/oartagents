@@ -10,6 +10,7 @@ import { RealtimePanel } from './components/app_agents/RealtimePanel';
 import { ChatPanel } from './components/app_agents/ChatPanel';
 import { RawEventsPanel } from './components/app_agents/RawEventsPanel';
 import { UsagePanel } from './components/app_agents/UsagePanel';
+import { ToolOutputsPanel } from './components/app_agents/ToolOutputsPanel';
 // Providers panel is redundant in SDK-only mode; removed from this page
 import { useEvents } from './hooks/useEvents';
 
@@ -46,7 +47,12 @@ export default function SDKTestStandalone() {
     name: string;
     instructions: string;
   }
-  const agents: AgentDef[] = [
+  // Scenario (agent cohort) state and dynamic agents
+  const [scenarios, setScenarios] = useState<{ id: string; label: string }[]>(
+    []
+  );
+  const [scenarioId, setScenarioId] = useState<string>('default');
+  const [agents, setAgents] = useState<AgentDef[]>([
     {
       id: 'general',
       name: 'General',
@@ -64,7 +70,7 @@ export default function SDKTestStandalone() {
       instructions:
         'You handle troubleshooting calmly, gather concise diagnostics, and provide stepwise resolutions.',
     },
-  ];
+  ]);
   const [activeAgentId, setActiveAgentId] = useState<string>('general');
   const activeAgent = agents.find((a) => a.id === activeAgentId) || agents[0];
   const effectiveInstructions = useMemo(() => {
@@ -96,6 +102,57 @@ export default function SDKTestStandalone() {
     forceEnglish: true,
   });
   const realtimeConnected = realtime.status === 'CONNECTED';
+  // Load scenarios list
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const r = await fetch(`${baseUrl}/api/scenarios`);
+        const data = await r.json();
+        if (r.ok && Array.isArray(data) && alive) {
+          setScenarios(
+            data.map((d: any) => ({ id: d.id, label: d.label || d.id }))
+          );
+        }
+      } catch {}
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [baseUrl]);
+
+  // When scenario changes, fetch its agents and adjust active agent to the default root if needed
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const r = await fetch(
+          `${baseUrl}/api/scenarios/${encodeURIComponent(scenarioId)}`
+        );
+        const data = await r.json();
+        if (r.ok && data?.agents && Array.isArray(data.agents) && alive) {
+          const nextAgents: AgentDef[] = data.agents.map((a: any) => ({
+            id: a.name,
+            name: a.name.charAt(0).toUpperCase() + a.name.slice(1),
+            instructions: a.instructions,
+          }));
+          setAgents(nextAgents);
+          const root =
+            typeof data.default_root === 'string'
+              ? data.default_root
+              : nextAgents[0]?.id;
+          setActiveAgentId((prev) =>
+            nextAgents.some((a) => a.id === prev)
+              ? prev
+              : root || nextAgents[0]?.id
+          );
+        }
+      } catch {}
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [baseUrl, scenarioId]);
   // User mic waveform (reuse mic.level for simplicity)
   const userLevel = mic.level; // 0..1
 
@@ -114,7 +171,7 @@ export default function SDKTestStandalone() {
           instructions: effectiveInstructions,
           session_id: sessionId || undefined,
           model,
-          scenario_id: 'default',
+          scenario_id: scenarioId,
         }),
         signal: ac.signal,
       });
@@ -158,7 +215,7 @@ export default function SDKTestStandalone() {
           session_id: sessionId,
           user_input: input,
           client_message_id: clientMessageId,
-          scenario_id: 'default',
+          scenario_id: scenarioId,
           agent: {
             name: activeAgent.id, // ensure backend turns run with the right agent
             instructions: effectiveInstructions,
@@ -232,45 +289,7 @@ export default function SDKTestStandalone() {
         window.setTimeout(() => void refresh(), 600);
         window.setTimeout(() => void refresh(), 1400);
       }
-      // Orchestrator call (backend may switch root); debounce and sync active agent
-      try {
-        const orc = await fetch(`${baseUrl}/api/orchestrate`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            scenario_id: 'default',
-            last_user_input: input,
-            current_root: activeAgent.name,
-            session_id: sessionId,
-          }),
-        });
-        if (orc.ok) {
-          const ojson = await orc.json();
-          if (ojson.changed && ojson.chosen_root) {
-            // Update activeAgent immediately to keep tools in sync
-            const next = ojson.chosen_root as string;
-            const nextId = next.toLowerCase();
-            setActiveAgentId(nextId);
-            // Append a local handoff timeline entry (UI-only), but dedupe if same
-            setHandoffEvents((ev) => {
-              const last = ev[ev.length - 1];
-              if (last && last.to.toLowerCase() === nextId) return ev;
-              return [
-                ...ev,
-                {
-                  id: 'h' + ev.length,
-                  from: activeAgent.name,
-                  to: next,
-                  reason: ojson.reason || 'n/a',
-                  at: new Date().toISOString(),
-                },
-              ];
-            });
-          }
-        }
-      } catch (e) {
-        console.warn('orchestrate failed', e);
-      }
+      // Removed: automatic orchestrate call. Active agent persists until explicit Apply or SDK-driven handoff.
     } catch (e: any) {
       setError(e.name === 'AbortError' ? 'Request timed out' : e.message);
     } finally {
@@ -375,7 +394,7 @@ export default function SDKTestStandalone() {
         const r = await fetch(
           `${baseUrl}/api/agents/${encodeURIComponent(
             activeAgent.name
-          )}/tools?scenario_id=default`
+          )}/tools?scenario_id=${encodeURIComponent(scenarioId)}`
         );
         if (!r.ok) throw new Error('tools fetch failed');
         const s = await r.json();
@@ -395,7 +414,7 @@ export default function SDKTestStandalone() {
     return () => {
       cancelled = true;
     };
-  }, [activeAgentId, activeAgent.name, baseUrl]);
+  }, [activeAgentId, activeAgent.name, baseUrl, scenarioId]);
 
   // Enter key handled inside ChatPanel
 
@@ -403,6 +422,20 @@ export default function SDKTestStandalone() {
   const [handoffEvents, setHandoffEvents] = useState<
     { id: string; from: string; to: string; reason: string; at: string }[]
   >([]);
+
+  // Minimal Summary drawer state
+  const [summaryOpen, setSummaryOpen] = useState(false);
+  const [summaryPayload, setSummaryPayload] = useState<any>(null);
+
+  function handleToolAction(action: { kind: string; payload?: any }) {
+    if (action.kind === 'open_summary') {
+      setSummaryPayload(action.payload || null);
+      setSummaryOpen(true);
+      return;
+    }
+    // Future: handle other actions and route to panels/paths
+    // console.log('[Tool action]', action);
+  }
 
   async function applyHandoff(targetAgent: string) {
     try {
@@ -420,6 +453,7 @@ export default function SDKTestStandalone() {
       setActiveAgentId(targetAgent.toLowerCase());
       // Refresh events so the server-side handoff event appears
       void refresh();
+      // AgentGraphPanel will auto-refresh via refreshKey=activeAgentId
     } catch (e) {
       console.warn('applyHandoff failed', e);
     }
@@ -506,6 +540,9 @@ export default function SDKTestStandalone() {
             effectiveInstructions={effectiveInstructions}
             realtimeConnected={realtimeConnected}
             title="Agent"
+            scenarios={scenarios}
+            selectedScenarioId={scenarioId}
+            onScenarioChange={(id) => setScenarioId(id)}
           />
 
           <ToolsPanel
@@ -515,6 +552,7 @@ export default function SDKTestStandalone() {
             allowedTools={allowedTools}
             onError={(msg) => setError(msg || null)}
             events={events}
+            scenarioId={scenarioId}
           />
 
           <UsagePanel
@@ -560,6 +598,7 @@ export default function SDKTestStandalone() {
             input={input}
             setInput={setInput}
             onSend={sendMessage}
+            onToolAction={handleToolAction}
             handoffEvents={handoffEvents}
           />
 
@@ -611,64 +650,52 @@ export default function SDKTestStandalone() {
           )}
         </div>
 
+        {/* Summary Drawer */}
+        {summaryOpen && (
+          <div className="fixed bottom-4 right-4 w-[420px] max-h-[70vh] bg-gray-900/90 border border-gray-800 rounded-lg shadow-xl backdrop-blur p-4 z-40">
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-sm font-semibold text-sky-300">Summary</h3>
+              <button
+                className="text-[11px] px-2 py-1 rounded border border-gray-700 hover:bg-gray-800 text-gray-300"
+                onClick={() => setSummaryOpen(false)}>
+                Close
+              </button>
+            </div>
+            <div className="text-sm whitespace-pre-wrap break-words max-h-[58vh] overflow-auto">
+              {summaryPayload?.text && (
+                <p className="mb-2">{summaryPayload.text}</p>
+              )}
+              {summaryPayload && summaryPayload.summary && (
+                <p className="mb-2">{summaryPayload.summary}</p>
+              )}
+              {summaryPayload?.bullets &&
+                Array.isArray(summaryPayload.bullets) && (
+                  <ul className="list-disc list-inside space-y-1 text-[13px]">
+                    {summaryPayload.bullets.map((b: any, i: number) => (
+                      <li key={i}>{String(b)}</li>
+                    ))}
+                  </ul>
+                )}
+              {!summaryPayload && (
+                <div className="text-[12px] text-gray-400">
+                  No summary payload.
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Right column: Agent Graph on top, Tool Calls below (keep width; page widened) */}
         <div className="xl:col-span-2 flex flex-col gap-6">
           <AgentGraphPanel
             baseUrl={baseUrl}
-            scenarioId={'default'}
+            scenarioId={scenarioId}
             rootAgent={activeAgent.name}
             containerClassName="h-[520px]"
+            refreshKey={activeAgentId}
           />
 
-          <section className="bg-gray-900/70 border border-gray-800 rounded-lg p-4">
-            <div className="flex items-center justify-between mb-2">
-              <h2 className="text-sm font-semibold text-indigo-300">
-                Tool Calls
-              </h2>
-              <span className="text-[10px] text-gray-500">from events</span>
-            </div>
-            {events.filter(
-              (e) => e.type === 'tool_call' || e.type === 'tool_result'
-            ).length === 0 ? (
-              <div className="text-[11px] text-gray-500">
-                No tool activity yet
-              </div>
-            ) : (
-              <ul className="space-y-1 max-h-56 overflow-auto pr-1">
-                {events
-                  .filter(
-                    (e) => e.type === 'tool_call' || e.type === 'tool_result'
-                  )
-                  .sort((a, b) => a.seq - b.seq)
-                  .map((ev: any, i: number) => (
-                    <li key={`${ev.seq}:${i}`} className="text-[11px]">
-                      <div className="flex items-center justify-between">
-                        <span className="text-indigo-200">
-                          #{ev.seq} {ev.data?.tool || 'tool'}
-                        </span>
-                        <span className="text-[10px] text-gray-500">
-                          {new Date(
-                            ev.timestamp_ms || Date.now()
-                          ).toLocaleTimeString()}
-                        </span>
-                      </div>
-                      {ev.type === 'tool_call' && ev.data?.args && (
-                        <pre className="mt-1 bg-gray-950 border border-gray-800 rounded p-2 text-[10px] overflow-auto">
-                          {JSON.stringify(ev.data.args, null, 2)}
-                        </pre>
-                      )}
-                      {ev.type === 'tool_result' && (
-                        <pre className="mt-1 bg-gray-950 border border-gray-800 rounded p-2 text-[10px] overflow-auto">
-                          {typeof ev.text === 'string'
-                            ? ev.text
-                            : JSON.stringify(ev.data || {}, null, 2)}
-                        </pre>
-                      )}
-                    </li>
-                  ))}
-              </ul>
-            )}
-          </section>
+          <ToolOutputsPanel events={events} onAction={handleToolAction} />
         </div>
 
         {/* Final Output panel hidden for now */}

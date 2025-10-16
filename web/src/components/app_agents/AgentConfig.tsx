@@ -15,6 +15,9 @@ export interface AgentConfigProps {
   effectiveInstructions: string;
   realtimeConnected: boolean;
   title?: string;
+  scenarios?: { id: string; label: string }[];
+  selectedScenarioId?: string;
+  onScenarioChange?: (id: string) => void;
 }
 
 export const AgentConfig: React.FC<AgentConfigProps> = ({
@@ -26,6 +29,9 @@ export const AgentConfig: React.FC<AgentConfigProps> = ({
   effectiveInstructions,
   realtimeConnected,
   title = 'Agent',
+  scenarios = [],
+  selectedScenarioId,
+  onScenarioChange,
 }) => {
   const activeAgent = agents.find((a) => a.id === activeAgentId) || agents[0];
   return (
@@ -38,7 +44,22 @@ export const AgentConfig: React.FC<AgentConfigProps> = ({
           </span>
         )}
       </div>
-      <div>
+      <div className="space-y-2">
+        {Array.isArray(scenarios) && scenarios.length > 1 && (
+          <div>
+            <label className="text-xs uppercase text-gray-400">Scenario</label>
+            <select
+              className="mt-1 w-full rounded bg-gray-800 border border-gray-700 px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
+              value={selectedScenarioId || scenarios[0]?.id}
+              onChange={(e) => onScenarioChange?.(e.target.value)}>
+              {scenarios.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.label || s.id}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
         <label className="text-xs uppercase text-gray-400">Agent</label>
         <div className="mt-1 flex flex-wrap gap-1.5">
           {agents.map((a) => (
