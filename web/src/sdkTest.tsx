@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import useMicrophone from './hooks/useMicrophone';
 import { useRealtime } from './realtime/useRealtime';
 import { ToolsPanel } from './components/app_agents/ToolsPanel';
+import { AgentGraphPanel } from './components/app_agents/AgentGraphPanel';
 import { SessionConfig } from './components/app_agents/SessionConfig';
 import { AgentConfig } from './components/app_agents/AgentConfig';
 import { PageHeader } from './components/app_agents/PageHeader';
@@ -9,6 +10,9 @@ import { RealtimePanel } from './components/app_agents/RealtimePanel';
 import { ChatPanel } from './components/app_agents/ChatPanel';
 import { RawEventsPanel } from './components/app_agents/RawEventsPanel';
 import { UsagePanel } from './components/app_agents/UsagePanel';
+import { ToolOutputsPanel } from './components/app_agents/ToolOutputsPanel';
+import { ContextPanel } from './components/app_agents/ContextPanel';
+import { HandoffSuggestionsPanel } from './components/app_agents/HandoffSuggestionsPanel';
 // Providers panel is redundant in SDK-only mode; removed from this page
 import { useEvents } from './hooks/useEvents';
 
@@ -45,7 +49,12 @@ export default function SDKTestStandalone() {
     name: string;
     instructions: string;
   }
-  const agents: AgentDef[] = [
+  // Scenario (agent cohort) state and dynamic agents
+  const [scenarios, setScenarios] = useState<{ id: string; label: string }[]>(
+    []
+  );
+  const [scenarioId, setScenarioId] = useState<string>('default');
+  const [agents, setAgents] = useState<AgentDef[]>([
     {
       id: 'general',
       name: 'General',
@@ -63,7 +72,7 @@ export default function SDKTestStandalone() {
       instructions:
         'You handle troubleshooting calmly, gather concise diagnostics, and provide stepwise resolutions.',
     },
-  ];
+  ]);
   const [activeAgentId, setActiveAgentId] = useState<string>('general');
   const activeAgent = agents.find((a) => a.id === activeAgentId) || agents[0];
   const effectiveInstructions = useMemo(() => {
@@ -95,6 +104,57 @@ export default function SDKTestStandalone() {
     forceEnglish: true,
   });
   const realtimeConnected = realtime.status === 'CONNECTED';
+  // Load scenarios list
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const r = await fetch(`${baseUrl}/api/scenarios`);
+        const data = await r.json();
+        if (r.ok && Array.isArray(data) && alive) {
+          setScenarios(
+            data.map((d: any) => ({ id: d.id, label: d.label || d.id }))
+          );
+        }
+      } catch {}
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [baseUrl]);
+
+  // When scenario changes, fetch its agents and adjust active agent to the default root if needed
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const r = await fetch(
+          `${baseUrl}/api/scenarios/${encodeURIComponent(scenarioId)}`
+        );
+        const data = await r.json();
+        if (r.ok && data?.agents && Array.isArray(data.agents) && alive) {
+          const nextAgents: AgentDef[] = data.agents.map((a: any) => ({
+            id: a.name,
+            name: a.name.charAt(0).toUpperCase() + a.name.slice(1),
+            instructions: a.instructions,
+          }));
+          setAgents(nextAgents);
+          const root =
+            typeof data.default_root === 'string'
+              ? data.default_root
+              : nextAgents[0]?.id;
+          setActiveAgentId((prev) =>
+            nextAgents.some((a) => a.id === prev)
+              ? prev
+              : root || nextAgents[0]?.id
+          );
+        }
+      } catch {}
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [baseUrl, scenarioId]);
   // User mic waveform (reuse mic.level for simplicity)
   const userLevel = mic.level; // 0..1
 
@@ -109,11 +169,11 @@ export default function SDKTestStandalone() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          agent_name: activeAgent.name,
+          agent_name: activeAgent.id, // use canonical id to match scenario
           instructions: effectiveInstructions,
           session_id: sessionId || undefined,
           model,
-          scenario_id: 'default',
+          scenario_id: scenarioId,
         }),
         signal: ac.signal,
       });
@@ -143,9 +203,12 @@ export default function SDKTestStandalone() {
     setLoading(true);
     setError(null);
     try {
+      // Clear input immediately for better UX (even before network completes)
+      const textToSend = input;
+      setInput('');
       // Prepare abortable request and refresh events immediately so the user message shows up
       const ac = new AbortController();
-      const timeout = window.setTimeout(() => ac.abort(), 12000);
+      const timeout = window.setTimeout(() => ac.abort(), 20000);
       const clientMessageId =
         globalThis.crypto && 'randomUUID' in globalThis.crypto
           ? (globalThis.crypto as any).randomUUID()
@@ -155,19 +218,45 @@ export default function SDKTestStandalone() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           session_id: sessionId,
-          user_input: input,
+          user_input: textToSend,
           client_message_id: clientMessageId,
-          scenario_id: 'default',
+          scenario_id: scenarioId,
           agent: {
-            name: activeAgent.name,
+            name: activeAgent.id, // ensure backend turns run with the right agent
             instructions: effectiveInstructions,
             model,
           },
         }),
         signal: ac.signal,
       });
+      // Optimistically add local user message with the same client_message_id to preserve order
+      setEvents((prev) => {
+        const nowMs = Date.now();
+        // Use a fractional temporary seq to avoid colliding with server-assigned integer seqs
+        const prevMax = prev.reduce(
+          (m, e) => Math.max(m, Number((e as any).seq) || 0),
+          0
+        );
+        const base = Math.max(prevMax, Number(lastSeq) || 0);
+        const tempSeq = base + 0.5; // server uses ints: 1,2,... so 0.5,1.5,... will never collide
+        const optimistic = {
+          session_id: sessionId,
+          seq: tempSeq,
+          type: 'message',
+          message_id: clientMessageId,
+          role: 'user',
+          agent_id: null,
+          // Use the same text we sent to avoid race with cleared input
+          text: textToSend,
+          final: true,
+          timestamp_ms: nowMs,
+          data: { optimistic: true, client_message_id: clientMessageId },
+        } as any;
+        const merged = [...prev, optimistic];
+        merged.sort((a, b) => (a.seq || 0) - (b.seq || 0));
+        return merged;
+      });
       // Kick an immediate events refresh while the turn processes on the server
-      // so the just-appended user event is visible right away
       void refresh();
       window.setTimeout(() => void refresh(), 250);
       window.setTimeout(() => void refresh(), 900);
@@ -175,27 +264,25 @@ export default function SDKTestStandalone() {
       window.clearTimeout(timeout);
       if (!r.ok) throw new Error(await r.text());
       const data = await r.json();
+      // Remove optimistic placeholder for this client_message_id if present
+      setEvents((prev) =>
+        prev.filter(
+          (e) =>
+            !(
+              e?.type === 'message' &&
+              e?.message_id === clientMessageId &&
+              e?.data?.optimistic
+            )
+        )
+      );
       // Mark chat as started on first successful turn
       if (!chatStarted) setChatStarted(true);
       // clear input after successful send
       setInput('');
       setOutput(data.final_output || '');
       setToolCalls(data.tool_calls || []);
-      // Append returned events (user event only)
-      if (Array.isArray(data.events) && data.events.length > 0) {
-        setEvents((prev) => {
-          const merged = [...prev];
-          for (const ev of data.events) {
-            if (!merged.some((e) => e.seq === ev.seq)) merged.push(ev);
-          }
-          merged.sort((a, b) => a.seq - b.seq);
-          const maxSeq = merged.length
-            ? merged[merged.length - 1].seq
-            : lastSeq;
-          setLastSeq(maxSeq);
-          return merged;
-        });
-      }
+      // Do not directly append returned events; the poller will fetch them.
+      // This avoids brief duplicate rendering when optimistic user message is present.
       if (autoRefresh) void loadTranscript(false);
       // Events fetching strategy
       if (autoRefresh) {
@@ -214,37 +301,7 @@ export default function SDKTestStandalone() {
         window.setTimeout(() => void refresh(), 600);
         window.setTimeout(() => void refresh(), 1400);
       }
-      // Orchestrator call (placeholder: backend may switch root later)
-      try {
-        const orc = await fetch(`${baseUrl}/api/orchestrate`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            scenario_id: 'default',
-            last_user_input: input,
-            current_root: activeAgent.name,
-            session_id: sessionId,
-          }),
-        });
-        if (orc.ok) {
-          const ojson = await orc.json();
-          if (ojson.changed && ojson.chosen_root) {
-            // For now just console log; UI handoff timeline below.
-            setHandoffEvents((ev) => [
-              ...ev,
-              {
-                id: 'h' + ev.length,
-                from: activeAgent.name,
-                to: ojson.chosen_root,
-                reason: ojson.reason || 'n/a',
-                at: new Date().toISOString(),
-              },
-            ]);
-          }
-        }
-      } catch (e) {
-        console.warn('orchestrate failed', e);
-      }
+      // Removed: automatic orchestrate call. Active agent persists until explicit Apply or SDK-driven handoff.
     } catch (e: any) {
       setError(e.name === 'AbortError' ? 'Request timed out' : e.message);
     } finally {
@@ -349,7 +406,7 @@ export default function SDKTestStandalone() {
         const r = await fetch(
           `${baseUrl}/api/agents/${encodeURIComponent(
             activeAgent.name
-          )}/tools?scenario_id=default`
+          )}/tools?scenario_id=${encodeURIComponent(scenarioId)}`
         );
         if (!r.ok) throw new Error('tools fetch failed');
         const s = await r.json();
@@ -369,7 +426,7 @@ export default function SDKTestStandalone() {
     return () => {
       cancelled = true;
     };
-  }, [activeAgentId, activeAgent.name, baseUrl]);
+  }, [activeAgentId, activeAgent.name, baseUrl, scenarioId]);
 
   // Enter key handled inside ChatPanel
 
@@ -378,11 +435,66 @@ export default function SDKTestStandalone() {
     { id: string; from: string; to: string; reason: string; at: string }[]
   >([]);
 
+  // Derive handoff suggestions from events so the Actions section appears
+  useEffect(() => {
+    const suggestions = (events || [])
+      .filter((e: any) => e && e.type === 'handoff_suggestion')
+      .map((e: any) => ({
+        id: String(e.seq ?? e.timestamp_ms ?? Math.random()),
+        from: String(activeAgent.name),
+        to: String(e.agent_id || ''),
+        reason: String(e.reason || ''),
+        at: e.timestamp_ms ? new Date(e.timestamp_ms).toISOString() : '',
+      }));
+    setHandoffEvents(suggestions);
+  }, [events, activeAgent.name]);
+
+  // Minimal Summary drawer state
+  const [summaryOpen, setSummaryOpen] = useState(false);
+  const [summaryPayload, setSummaryPayload] = useState<any>(null);
+
+  function handleToolAction(action: { kind: string; payload?: any }) {
+    if (action.kind === 'open_summary') {
+      setSummaryPayload(action.payload || null);
+      setSummaryOpen(true);
+      return;
+    }
+    // Future: handle other actions and route to panels/paths
+    // console.log('[Tool action]', action);
+  }
+
+  async function applyHandoff(targetAgent: string) {
+    try {
+      if (!sessionId) return;
+      const r = await fetch(`${baseUrl}/api/sdk/session/set_active_agent`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          session_id: sessionId,
+          agent_name: targetAgent,
+        }),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      // Update local active agent immediately
+      setActiveAgentId(targetAgent.toLowerCase());
+      // Refresh events so the server-side handoff event appears
+      void refresh();
+      // AgentGraphPanel will auto-refresh via refreshKey=activeAgentId
+    } catch (e) {
+      console.warn('applyHandoff failed', e);
+    }
+  }
+
+  function dismissHandoff(id: string) {
+    // Remove from local timeline only (server events remain for audit)
+    setHandoffEvents((evts) => evts.filter((e) => e.id !== id));
+  }
+
   return (
     <div className="min-h-screen bg-gray-950 text-gray-100 p-6 font-sans">
-      <div className="max-w-7xl mx-auto grid grid-cols-1 xl:grid-cols-4 gap-6 transition-all">
+      <div className="max-w-[1600px] mx-auto grid grid-cols-1 xl:grid-cols-5 gap-6 transition-all">
         {/* Full-width header */}
-        <div className="xl:col-span-4">
+        <div className="xl:col-span-5">
           <PageHeader
             title="OA Agents SDK"
             subtitle="Realtime and multi-turn chat demo"
@@ -390,7 +502,7 @@ export default function SDKTestStandalone() {
         </div>
 
         {/* Left column: Session, Agent, Tools, Usage, Logs toggle */}
-        <div className="space-y-4 lg:col-span-1">
+        <div className="space-y-4 xl:col-span-1">
           <section className="bg-gray-900/70 border border-gray-800 rounded-lg">
             <div className="px-4 py-2 border-b border-gray-800 flex items-center justify-between">
               <h2 className="text-sm font-semibold text-teal-300">Session</h2>
@@ -454,6 +566,9 @@ export default function SDKTestStandalone() {
             effectiveInstructions={effectiveInstructions}
             realtimeConnected={realtimeConnected}
             title="Agent"
+            scenarios={scenarios}
+            selectedScenarioId={scenarioId}
+            onScenarioChange={(id) => setScenarioId(id)}
           />
 
           <ToolsPanel
@@ -462,6 +577,8 @@ export default function SDKTestStandalone() {
             activeAgentName={activeAgent.name}
             allowedTools={allowedTools}
             onError={(msg) => setError(msg || null)}
+            events={events}
+            scenarioId={scenarioId}
           />
 
           <UsagePanel
@@ -478,7 +595,7 @@ export default function SDKTestStandalone() {
           </button>
         </div>
 
-        {/* Middle column: Realtime + Chat */}
+        {/* Middle column: Realtime + Chat (center) */}
         <div className="xl:col-span-2 flex flex-col gap-6">
           <RealtimePanel
             status={realtime.status}
@@ -507,46 +624,105 @@ export default function SDKTestStandalone() {
             input={input}
             setInput={setInput}
             onSend={sendMessage}
+            onToolAction={handleToolAction}
             handoffEvents={handoffEvents}
           />
 
-          {/* Final Output panel hidden for now */}
-          {false && output && (
-            <section className="bg-gray-900/70 border border-gray-800 rounded-lg p-4">
-              <h2 className="text-sm font-semibold text-teal-400 mb-2">
-                Final Output
-              </h2>
-              <pre className="whitespace-pre-wrap break-words text-sm bg-gray-950 border border-gray-800 rounded p-3 max-h-56 overflow-auto">
-                {output}
-              </pre>
-              {toolCalls.length > 0 && (
-                <div className="mt-3">
-                  <h3 className="text-xs font-semibold text-gray-400">
-                    Tool Calls
-                  </h3>
-                  <ul className="list-disc list-inside text-xs text-gray-300">
-                    {toolCalls.map((t, i) => (
-                      <li key={i}>{t}</li>
+          {/* Handoff suggestions moved to right column panel */}
+        </div>
+
+        {/* Summary Drawer */}
+        {summaryOpen && (
+          <div className="fixed bottom-4 right-4 w-[420px] max-h-[70vh] bg-gray-900/90 border border-gray-800 rounded-lg shadow-xl backdrop-blur p-4 z-40">
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-sm font-semibold text-sky-300">Summary</h3>
+              <button
+                className="text-[11px] px-2 py-1 rounded border border-gray-700 hover:bg-gray-800 text-gray-300"
+                onClick={() => setSummaryOpen(false)}>
+                Close
+              </button>
+            </div>
+            <div className="text-sm whitespace-pre-wrap break-words max-h-[58vh] overflow-auto">
+              {summaryPayload?.text && (
+                <p className="mb-2">{summaryPayload.text}</p>
+              )}
+              {summaryPayload && summaryPayload.summary && (
+                <p className="mb-2">{summaryPayload.summary}</p>
+              )}
+              {summaryPayload?.bullets &&
+                Array.isArray(summaryPayload.bullets) && (
+                  <ul className="list-disc list-inside space-y-1 text-[13px]">
+                    {summaryPayload.bullets.map((b: any, i: number) => (
+                      <li key={i}>{String(b)}</li>
                     ))}
                   </ul>
+                )}
+              {!summaryPayload && (
+                <div className="text-[12px] text-gray-400">
+                  No summary payload.
                 </div>
               )}
-              <div className="mt-4 text-[10px] text-gray-500 space-y-1 border-t border-gray-800 pt-2">
-                <div>
-                  <span className="text-gray-400">
-                    Effective Instructions Preview:
-                  </span>{' '}
-                  {effectiveInstructions.slice(0, 120)}
-                  {effectiveInstructions.length > 120 ? '…' : ''}
-                </div>
-              </div>
-            </section>
-          )}
+            </div>
+          </div>
+        )}
+
+        {/* Right column: Agent Graph on top, Tool Calls below (keep width; page widened) */}
+        <div className="xl:col-span-2 flex flex-col gap-6">
+          <AgentGraphPanel
+            baseUrl={baseUrl}
+            scenarioId={scenarioId}
+            rootAgent={activeAgent.name}
+            containerClassName="h-[720px]"
+            refreshKey={activeAgentId}
+          />
+
+          <HandoffSuggestionsPanel
+            items={handoffEvents}
+            onApply={applyHandoff}
+            onDismiss={dismissHandoff}
+          />
+
+          <ToolOutputsPanel events={events} onAction={handleToolAction} />
+
+          <ContextPanel baseUrl={baseUrl} sessionId={sessionId} />
         </div>
+
+        {/* Final Output panel hidden for now */}
+        {false && output && (
+          <section className="bg-gray-900/70 border border-gray-800 rounded-lg p-4">
+            <h2 className="text-sm font-semibold text-teal-400 mb-2">
+              Final Output
+            </h2>
+            <pre className="whitespace-pre-wrap break-words text-sm bg-gray-950 border border-gray-800 rounded p-3 max-h-56 overflow-auto">
+              {output}
+            </pre>
+            {toolCalls.length > 0 && (
+              <div className="mt-3">
+                <h3 className="text-xs font-semibold text-gray-400">
+                  Tool Calls
+                </h3>
+                <ul className="list-disc list-inside text-xs text-gray-300">
+                  {toolCalls.map((t, i) => (
+                    <li key={i}>{t}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            <div className="mt-4 text-[10px] text-gray-500 space-y-1 border-t border-gray-800 pt-2">
+              <div>
+                <span className="text-gray-400">
+                  Effective Instructions Preview:
+                </span>{' '}
+                {effectiveInstructions.slice(0, 120)}
+                {effectiveInstructions.length > 120 ? '…' : ''}
+              </div>
+            </div>
+          </section>
+        )}
 
         {/* Full-width Raw Logs when open */}
         {showLogs && (
-          <div className="xl:col-span-4">
+          <div className="xl:col-span-5">
             <RawEventsPanel transcript={transcript} events={events} fullWidth />
           </div>
         )}

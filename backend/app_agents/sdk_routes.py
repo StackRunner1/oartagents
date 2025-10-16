@@ -6,8 +6,8 @@ import logging
 import time
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Body, HTTPException, Query
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from . import sdk_manager
@@ -115,6 +115,32 @@ async def sdk_session_delete(req: SDKSessionDeleteRequest):
         return {"ok": True}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"delete failed: {e}")
+
+
+# ---- SDK: Session Context ----
+@router.get("/sdk/session/context")
+async def sdk_session_get_context(session_id: str = Query(...)):
+    try:
+        return {
+            "ok": True,
+            "session_id": session_id,
+            "context": store.get_context(session_id) or {},
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"get context failed: {e}")
+
+
+@router.post("/sdk/session/context")
+async def sdk_session_set_context(session_id: str = Query(...), ctx: dict = Body(...)):
+    try:
+        store.set_context(session_id, ctx or {})
+        return {
+            "ok": True,
+            "session_id": session_id,
+            "context": store.get_context(session_id) or {},
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"set context failed: {e}")
 
 
 class SDKSessionMessageRequest(BaseModel):
@@ -441,3 +467,189 @@ async def sdk_session_audio(req: AudioChunkRequest):
         "sample_rate": req.sample_rate,
         "ts": time.time(),
     }
+
+
+# ---- SDK: Agent visualization ----
+class VizRequest(BaseModel):
+    scenario_id: str = Field(...)
+    root_agent: str | None = Field(None, description="Optional root agent name for viz")
+    filename: str | None = Field(
+        None, description="Optional file base name to save on server"
+    )
+    return_dot: bool = Field(
+        False,
+        description="If true, include DOT source in response (no Graphviz needed)",
+    )
+    output_format: str | None = Field(
+        None, description="Preferred output format: 'svg' or 'png'"
+    )
+
+
+@router.post("/sdk/agents/visualize")
+async def visualize_agents(req: VizRequest):
+    try:
+        root, mapping = sdk_manager.build_agent_network_for_viz(
+            req.scenario_id, root_agent=req.root_agent
+        )
+        if not root:
+            # Return ok:false with a helpful message rather than 400 to avoid noisy UI errors
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": "No scenario/agents to visualize",
+                    "scenario_id": req.scenario_id,
+                },
+                status_code=200,
+            )
+        try:
+            from agents.extensions.visualization import \
+                draw_graph  # type: ignore
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"viz unavailable: {e}")
+
+        # Helper: attempt to ensure Graphviz 'dot' is discoverable on Windows/conda
+        def _ensure_dot_available() -> str | None:
+            try:
+                import os
+                import shutil
+
+                # If already on PATH or GRAPHVIZ_DOT is set and exists, we're good
+                if shutil.which("dot"):
+                    return None
+                dot_env = os.environ.get("GRAPHVIZ_DOT")
+                if dot_env and os.path.exists(dot_env):
+                    return dot_env
+                # Try conda prefix locations
+                conda = os.environ.get("CONDA_PREFIX")
+                candidates: list[str] = []
+                if conda:
+                    candidates.extend(
+                        [
+                            os.path.join(conda, "Library", "bin", "dot.exe"),
+                            os.path.join(
+                                conda, "Library", "bin", "graphviz", "dot.exe"
+                            ),
+                            os.path.join(conda, "bin", "dot"),
+                        ]
+                    )
+                # Common Windows installs
+                candidates.extend(
+                    [
+                        r"C:\\Program Files\\Graphviz\\bin\\dot.exe",
+                        r"C:\\Program Files (x86)\\Graphviz2.38\\bin\\dot.exe",
+                    ]
+                )
+                for p in candidates:
+                    if os.path.exists(p):
+                        os.environ["GRAPHVIZ_DOT"] = p
+                        return p
+            except Exception:
+                return None
+            return None
+
+        _ensure_dot_available()
+
+        # draw_graph returns a graphviz.Digraph
+        g = draw_graph(root)
+        # If explicitly requested, include DOT source (doesn't require Graphviz binaries)
+        if getattr(req, "return_dot", False):
+            try:
+                dot_src = getattr(g, "source", None)
+                if not isinstance(dot_src, str):
+                    dot_src = str(g)
+            except Exception:
+                dot_src = None
+            dot_payload = {"dot_source": dot_src}
+        else:
+            dot_payload = {}
+        # Prefer requested format; else SVG for crisp scaling; fallback to PNG
+        try:
+            if getattr(req, "output_format", None) in {"png", "svg"}:
+                fmt = req.output_format
+                g.format = fmt  # type: ignore[attr-defined]
+                b = g.pipe(format=fmt)  # type: ignore[call-arg]
+                payload = base64.b64encode(b).decode("ascii")
+                return JSONResponse(
+                    {"ok": True, "format": fmt, "image_base64": payload, **dot_payload}
+                )
+            # Default try SVG first
+            g.format = "svg"  # type: ignore[attr-defined]
+            svg_bytes = g.pipe(format="svg")  # type: ignore[call-arg]
+            payload = base64.b64encode(svg_bytes).decode("ascii")
+            return JSONResponse(
+                {"ok": True, "format": "svg", "image_base64": payload, **dot_payload}
+            )
+        except Exception as e_svg:
+            try:
+                g.format = "png"  # type: ignore[attr-defined]
+                png_bytes = g.pipe(format="png")  # type: ignore[call-arg]
+                payload = base64.b64encode(png_bytes).decode("ascii")
+                return JSONResponse(
+                    {
+                        "ok": True,
+                        "format": "png",
+                        "image_base64": payload,
+                        **dot_payload,
+                    }
+                )
+            except Exception as e1:
+                # Fallback: try saving to a temp file and re-open
+                fname = (req.filename or "agent_graph") + ".png"
+                try:
+                    g.render(filename=req.filename or "agent_graph", format="png", cleanup=True)  # type: ignore[call-arg]
+                except Exception as e2:
+                    # Write DOT source to a safe path for troubleshooting (usually missing Graphviz system binaries)
+                    try:
+                        import os
+                        from uuid import uuid4 as _uuid4
+
+                        backend_dir = os.path.dirname(os.path.dirname(__file__))
+                        out_root = os.path.join(backend_dir, "agent_graph_out")
+                        # If a file exists with this name, fallback to backend_dir
+                        if os.path.exists(out_root) and not os.path.isdir(out_root):
+                            out_root = backend_dir
+                        os.makedirs(out_root, exist_ok=True)
+                        dot_path = os.path.join(
+                            out_root, f"agent_graph_{_uuid4().hex}.dot"
+                        )
+                        # graphviz.Digraph exposes 'source'
+                        dot_src = getattr(g, "source", None)
+                        if not isinstance(dot_src, str):
+                            try:
+                                dot_src = str(g)
+                            except Exception:
+                                dot_src = "// (no source available)"
+                        with open(dot_path, "w", encoding="utf-8") as f:
+                            f.write(dot_src or "")
+                        # Try to include discovered dot path in hint
+                        dot_hint = os.environ.get("GRAPHVIZ_DOT") or "dot (not found)"
+                        hint = (
+                            f"viz render failed: {e2}; wrote DOT to {dot_path}. "
+                            f"Set GRAPHVIZ_DOT to a valid dot.exe or install Graphviz and add it to PATH. Using: {dot_hint}"
+                        )
+                    except Exception as ewrite:
+                        hint = f"viz render failed: {e2}; additionally failed to write DOT: {ewrite}"
+                    return JSONResponse({"ok": False, "error": hint}, status_code=200)
+                try:
+                    with open(fname, "rb") as f:
+                        payload = base64.b64encode(f.read()).decode("ascii")
+                    return JSONResponse(
+                        {
+                            "ok": True,
+                            "format": "png",
+                            "image_base64": payload,
+                            **dot_payload,
+                        }
+                    )
+                except Exception as e3:
+                    return JSONResponse(
+                        {"ok": False, "error": f"viz read failed: {e3}"},
+                        status_code=200,
+                    )
+    except HTTPException:
+        raise
+    except Exception as e:
+        # Return ok:false as JSON to help the UI
+        return JSONResponse(
+            {"ok": False, "error": f"visualize failed: {e}"}, status_code=200
+        )

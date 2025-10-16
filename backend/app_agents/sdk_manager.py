@@ -4,58 +4,41 @@ import asyncio
 import logging
 from typing import Any, Dict
 
-logger = logging.getLogger(__name__)
-
-# Load Agents SDK unconditionally; this app requires it. Try multiple import paths for robustness.
-Agent = ModelSettings = Runner = SQLiteSession = function_tool = None  # type: ignore
-_import_err: Exception | None = None
+# Direct Agents SDK import only
 try:
-    import agents as _agents  # type: ignore
+    from agents import RunContextWrapper  # type: ignore
+except Exception:
+    RunContextWrapper = None  # type: ignore
+try:
+    from agents import Runner  # type: ignore
+except Exception:
+    Runner = None  # type: ignore
+try:
+    from agents import Agent as _Agent  # type: ignore
 
-    if all(
-        hasattr(_agents, n)
-        for n in ("Agent", "ModelSettings", "Runner", "SQLiteSession", "function_tool")
-    ):
-        from agents import Runner  # type: ignore
-        from agents import Agent, ModelSettings, SQLiteSession, function_tool
-    else:
-        raise ImportError(
-            "'agents' module found but missing required attributes; possibly a different package installed."
-        )
-except Exception as e1:  # pragma: no cover
-    _import_err = e1
-    try:
-        import openai_agents as _agents  # type: ignore
+    Agent = _Agent  # type: ignore
+except Exception:
+    Agent = None  # type: ignore
+try:
+    from agents import ModelSettings as _ModelSettings  # type: ignore
 
-        if all(
-            hasattr(_agents, n)
-            for n in (
-                "Agent",
-                "ModelSettings",
-                "Runner",
-                "SQLiteSession",
-                "function_tool",
-            )
-        ):
-            from openai_agents import ModelSettings  # type: ignore
-            from openai_agents import (Agent, Runner, SQLiteSession,
-                                       function_tool)
+    ModelSettings = _ModelSettings  # type: ignore
+except Exception:
+    ModelSettings = None  # type: ignore
+try:
+    from agents import SQLiteSession as _SQLiteSession  # type: ignore
 
-            _import_err = None
-        else:
-            raise ImportError(
-                "'openai_agents' module found but missing required attributes."
-            )
-    except Exception as e2:  # pragma: no cover
-        _import_err = e2
+    SQLiteSession = _SQLiteSession  # type: ignore
+except Exception:
+    SQLiteSession = None  # type: ignore
+try:
+    from agents import function_tool as _function_tool  # type: ignore
 
-if any(v is None for v in (Agent, ModelSettings, Runner, SQLiteSession, function_tool)):
-    msg = (
-        "OpenAI Agents SDK is required. Install using: pip install 'openai-agents>=0.3.2'. "
-        "Tried imports 'agents' and 'openai_agents' but failed. Last error: "
-        + str(_import_err)
-    )
-    raise RuntimeError(msg)
+    function_tool = _function_tool  # type: ignore
+except Exception:
+    function_tool = None  # type: ignore
+
+logger = logging.getLogger(__name__)
 
 # Built-in tools (only if Agents SDK is enabled)
 FileSearchTool = WebSearchTool = ComputerTool = HostedMCPTool = LocalShellTool = ImageGenerationTool = CodeInterpreterTool = None  # type: ignore
@@ -98,17 +81,43 @@ from .tools import tool_registry
 # In-memory map of active sessions to SQLiteSession objects (file-backed optional later)
 # SQLiteSession may be unavailable; store as generic values
 _session_cache: Dict[str, Any] = {}
+# Optional allowlist for agent-as-tools: { agent_name: [roles...] }
+# If an entry exists for an agent, that agent-as-tool will only be enabled when
+# the session context roles intersect this set. Leave empty for permissive mode.
+AGENT_TOOL_ROLE_ALLOWLIST: Dict[str, list[str]] = {
+    # Example:
+    # "summarizer": ["agents", "assistant", "supervisor"],
+    # "sales": ["supervisor", "general", "agents"],
+}
+
+
+class _MinimalSession:
+    def __init__(self, session_id: str):
+        self.session_id = session_id
+
+    # Match async API shape used by fallbacks
+    async def get_items(self):
+        return []
 
 
 def get_or_create_session(session_id: str):
     session = _session_cache.get(session_id)
-    if not session:
-        session = SQLiteSession(session_id)
-        _session_cache[session_id] = session
+    if session:
+        return session
+    try:
+        if SQLiteSession is not None:
+            session = SQLiteSession(session_id)
+        else:
+            session = _MinimalSession(session_id)
+    except Exception:
+        session = _MinimalSession(session_id)
+    _session_cache[session_id] = session
     return session
 
 
-def _resolve_agent_tools(names: list[str]):
+def _resolve_agent_tools(
+    names: list[str], session_context: Dict[str, Any] | None = None
+):
     tools = []
     _ensure_builtin_tools_loaded()
     # In-file simple boolean switches (safe defaults). Easier to port later.
@@ -172,12 +181,38 @@ def _resolve_agent_tools(names: list[str]):
         spec = tool_registry.get(n)
         if not spec:
             continue
-        ft = function_tool(
-            spec.func,
-            name=spec.name,
-            description=spec.description,
-            parameters=spec.params_schema or None,
-        )
+        # Dynamic gating by roles if specified on the tool spec
+        try:
+            roles_allowed = getattr(spec, "roles_allowed", []) or []
+        except Exception:
+            roles_allowed = []
+        if roles_allowed:
+            sess_roles = set((session_context or {}).get("roles", []) or [])
+            if not sess_roles.intersection(set(roles_allowed)):
+                # Skip tool if no intersection between session roles and allowed roles
+                continue
+        # Try modern signature first; fall back to variants while preserving schema
+        # If infer_schema is True, let SDK derive from signature; else pass provided schema
+        infer = getattr(spec, "infer_schema", True)
+        params = None if infer else (spec.params_schema or None)
+        try:
+            ft = function_tool(
+                spec.func,
+                name=spec.name,
+                description=spec.description,
+                parameters=params,
+            )
+        except TypeError:
+            try:
+                # Older signature may accept positional schema arg
+                ft = function_tool(spec.func, params)  # type: ignore[arg-type]
+            except TypeError:
+                try:
+                    # Or keyword-only parameters
+                    ft = function_tool(spec.func, parameters=params)  # type: ignore[call-arg]
+                except TypeError:
+                    # Last resort: no schema (may auto-generate); less strict
+                    ft = function_tool(spec.func)
         tools.append(ft)
     return tools
 
@@ -188,6 +223,366 @@ def _resolve_agent_tools(names: list[str]):
 def _build_model_provider(model_name: str):
     # Use raw model string with Agents SDK
     return model_name
+
+
+def build_agent_network_for_viz(scenario_id: str, root_agent: str | None = None):
+    """Construct Agents with tools and native handoffs for visualization.
+    Returns (root_agent_obj, name_to_agent_dict).
+    This does not modify runtime state; used only for graph viz.
+    """
+    sc = get_scenario(scenario_id)
+    if not sc:
+        return None, {}
+    try:
+        from agents import Agent  # type: ignore
+        from agents.extensions.handoff_prompt import \
+            prompt_with_handoff_instructions  # type: ignore
+    except Exception:
+        return None, {}
+
+    # Pre-create all agents without handoffs, then wire handoffs referencing instances
+    name_to_agent: Dict[str, Any] = {}
+    for ad in sc.agents:
+        # For visualization, use a permissive context so role-gated tools appear
+        tools = _resolve_agent_tools(
+            ad.tools,
+            session_context={
+                "roles": [ad.name, "agents", "assistant", "sales", "support", "general"]
+            },
+        )
+        prov = _build_model_provider(ad.model)
+        instructions = ad.instructions
+        try:
+            if ad.handoff_targets:
+                instructions = prompt_with_handoff_instructions(instructions)
+        except Exception:
+            pass
+        name_to_agent[ad.name] = Agent(
+            name=ad.name,
+            instructions=instructions,
+            model=prov,
+            tools=tools,
+        )
+
+    # Wire native handoffs using actual Agent instances
+    for ad in sc.agents:
+        src = name_to_agent.get(ad.name)
+        if not src:
+            continue
+        try:
+            from agents import handoff  # type: ignore
+        except Exception:
+            continue
+        handoffs = []
+        for tgt_name in ad.handoff_targets or []:
+            tgt = name_to_agent.get(tgt_name)
+            if tgt is None:
+                continue
+            # Minimal handoff; customize later with on_handoff/input_type if desired
+            try:
+                handoffs.append(handoff(agent=tgt))
+            except Exception:
+                # Fallback: pass agent directly (SDK allows Agent or Handoff)
+                handoffs.append(tgt)
+        # Recreate with handoffs to avoid mutating internal state
+        if handoffs:
+            base = src
+            name_to_agent[ad.name] = Agent(
+                name=base.name,
+                instructions=base.instructions,
+                model=base.model,
+                tools=list(base.tools or []),
+                handoffs=handoffs,
+            )
+
+    # Determine root for viz: explicit param (case-insensitive), else supervisor, else default_root, else any
+    root_candidate = (root_agent or "").strip()
+    root_agent_obj = None
+    if root_candidate:
+        # Case-insensitive match by name
+        root_agent_obj = name_to_agent.get(root_candidate)
+        if root_agent_obj is None:
+            lower_map = {k.lower(): v for k, v in name_to_agent.items()}
+            root_agent_obj = lower_map.get(root_candidate.lower())
+    if root_agent_obj is None:
+        # Try supervisor by role
+        sup_name = next(
+            (
+                a.name
+                for a in sc.agents
+                if getattr(a, "role", "").lower() == "supervisor"
+            ),
+            None,
+        )
+        if sup_name:
+            root_agent_obj = name_to_agent.get(sup_name)
+    if root_agent_obj is None:
+        # Try scenario default_root (case-insensitive)
+        if sc.default_root:
+            root_agent_obj = name_to_agent.get(sc.default_root) or next(
+                (
+                    v
+                    for k, v in name_to_agent.items()
+                    if k.lower() == sc.default_root.lower()
+                ),
+                None,
+            )
+    if root_agent_obj is None and name_to_agent:
+        # Fallback to first agent defined
+        root_agent_obj = next(iter(name_to_agent.values()))
+
+    # Also expose agents-as-tools to the orchestrator for visualization parity
+    try:
+        orchestrator_name = sc.default_root
+        sup = next(
+            (
+                a.name
+                for a in sc.agents
+                if getattr(a, "role", "").lower() == "supervisor"
+            ),
+            None,
+        )
+        if sup:
+            orchestrator_name = sup
+        orch = name_to_agent.get(orchestrator_name)
+        if orch is not None:
+            extra_tools = []
+            for ad in sc.agents:
+                if ad.name == orchestrator_name:
+                    continue
+                tgt = name_to_agent.get(ad.name)
+                if not tgt:
+                    continue
+                try:
+                    extra_tools.append(
+                        tgt.as_tool(
+                            tool_name=f"{ad.name}_agent_tool",
+                            tool_description=f"Call the {ad.name} agent for a subtask and return the result.",
+                            # Visualization: show all agent-tools
+                            is_enabled=lambda *_args, **_kwargs: True,
+                        )
+                    )
+                except Exception:
+                    pass
+            if extra_tools:
+                base = orch
+                name_to_agent[orchestrator_name] = Agent(
+                    name=base.name,
+                    instructions=base.instructions,
+                    model=base.model,
+                    tools=list(base.tools or []) + extra_tools,
+                    handoffs=getattr(base, "handoffs", None),
+                )
+        # If the requested root_agent is different and present, mirror the agent-as-tools for that root too
+        if root_agent:
+            ra = root_agent
+            # Case-insensitive lookup for the provided root agent string
+            if ra not in name_to_agent:
+                lower_map = {k.lower(): k for k in name_to_agent.keys()}
+                ra = lower_map.get(root_agent.lower(), root_agent)
+            if ra in name_to_agent and ra != orchestrator_name:
+                base = name_to_agent[ra]
+                extra_tools2 = []
+                for ad in sc.agents:
+                    if ad.name == ra:
+                        continue
+                    tgt = name_to_agent.get(ad.name)
+                    if tgt is None:
+                        continue
+                    try:
+                        extra_tools2.append(
+                            tgt.as_tool(
+                                tool_name=f"{ad.name}_agent_tool",
+                                tool_description=f"Call the {ad.name} agent for a subtask and return the result.",
+                                is_enabled=lambda *_args, **_kwargs: True,
+                            )
+                        )
+                    except Exception:
+                        pass
+                if extra_tools2:
+                    name_to_agent[ra] = Agent(
+                        name=base.name,
+                        instructions=base.instructions,
+                        model=base.model,
+                        tools=list(base.tools or []) + extra_tools2,
+                        handoffs=getattr(base, "handoffs", None),
+                    )
+    except Exception:
+        pass
+    return root_agent_obj, name_to_agent
+
+
+def build_agent_network_for_runtime(scenario_id: str, session_id: str | None = None):
+    """Construct a name->Agent mapping with tools, native handoffs, and agents-as-tools.
+    - Applies handoff prompt to agents that can handoff.
+    - Uses session context for tool gating.
+    - Adds on_handoff callback that logs a handoff event (UI can apply/dismiss).
+    - Exposes other agents as tools to the orchestrator (supervisor or default_root).
+    """
+    sc = get_scenario(scenario_id)
+    if not sc:
+        return {}
+    try:
+        from agents import handoff  # type: ignore
+        from agents.extensions.handoff_prompt import \
+            prompt_with_handoff_instructions  # type: ignore
+    except Exception:
+        return {}
+
+    session_context = store.get_context(session_id) if session_id else {}
+
+    # First pass: create agents with tools and (if applicable) handoff prompt
+    name_to_agent: Dict[str, Any] = {}
+    for ad in sc.agents:
+        # Enrich context roles per-agent so role-gated tools (e.g., product_search for Sales) are enabled
+        ctx_roles = set((session_context.get("roles") or []))
+        ctx_roles.update(
+            {ad.name, getattr(ad, "role", "") or "", "agents", "assistant"}
+        )
+        per_agent_ctx = {**session_context, "roles": list({r for r in ctx_roles if r})}
+        tools = _resolve_agent_tools(ad.tools, session_context=per_agent_ctx)
+        prov = _build_model_provider(ad.model)
+        instructions = ad.instructions
+        try:
+            if ad.handoff_targets:
+                instructions = prompt_with_handoff_instructions(instructions)
+        except Exception:
+            pass
+        ms = ModelSettings(include_usage=True)
+        name_to_agent[ad.name] = Agent(
+            name=ad.name,
+            instructions=instructions,
+            model=prov,
+            tools=tools,
+            model_settings=ms,
+        )
+
+    # Second pass: wire native handoffs
+    for ad in sc.agents:
+        src = name_to_agent.get(ad.name)
+        if not src:
+            continue
+
+        handoffs = []
+        for tgt_name in ad.handoff_targets or []:
+            tgt = name_to_agent.get(tgt_name)
+            if tgt is None:
+                continue
+
+            def _make_cb(target: str):
+                def _cb(input: Any | None = None):
+                    try:
+                        sid = session_id or ""
+                        seq = store.next_seq(sid) if sid else 0
+                        store.append_event(
+                            sid,
+                            Event(
+                                session_id=sid,
+                                seq=seq,
+                                # Suggestion emitted by the SDK (not yet applied)
+                                type="handoff_suggestion",
+                                role="system",
+                                agent_id=target,
+                                text=None,
+                                final=True,
+                                reason=(
+                                    getattr(input, "reason", None)
+                                    if input is not None
+                                    else "llm_handoff"
+                                ),
+                                timestamp_ms=int(time.time() * 1000),
+                            ),
+                        )
+                    except Exception:
+                        pass
+
+                return _cb
+
+            try:
+                handoffs.append(handoff(agent=tgt, on_handoff=_make_cb(tgt_name)))
+            except TypeError:
+                try:
+                    handoffs.append(handoff(agent=tgt))
+                except Exception:
+                    handoffs.append(tgt)
+        if handoffs:
+            base = src
+            name_to_agent[ad.name] = Agent(
+                name=base.name,
+                instructions=base.instructions,
+                model=base.model,
+                tools=list(base.tools or []),
+                handoffs=handoffs,
+                model_settings=getattr(base, "model_settings", None),
+            )
+
+    # Agents-as-tools for orchestrator
+    try:
+        orchestrator_name = sc.default_root
+        sup = next(
+            (
+                a.name
+                for a in sc.agents
+                if getattr(a, "role", "").lower() == "supervisor"
+            ),
+            None,
+        )
+        if sup:
+            orchestrator_name = sup
+        orch = name_to_agent.get(orchestrator_name)
+        if orch is not None:
+            extra_tools = []
+            for ad in sc.agents:
+                if ad.name == orchestrator_name:
+                    continue
+                tgt = name_to_agent.get(ad.name)
+                if not tgt:
+                    continue
+
+                def _is_enabled(ctx: Any | None = None, agent_name: str = ad.name):
+                    """Gate agent-as-tool availability by session context roles.
+                    Defaults to enabled when no roles are provided to make the
+                    feature work out-of-the-box; can be restricted by setting
+                    context.roles to a list that omits the agent name and the
+                    special "agents" flag.
+                    """
+                    try:
+                        roles = set(((ctx or {}).get("roles") or []))
+                        # If there's a specific allowlist configured for this agent, enforce it
+                        allow = AGENT_TOOL_ROLE_ALLOWLIST.get(agent_name)
+                        if isinstance(allow, list) and allow:
+                            return bool(roles.intersection(set(allow)))
+                        # If no roles provided, default to enabled for better UX
+                        if not roles:
+                            return True
+                        return agent_name in roles or "agents" in roles
+                    except Exception:
+                        return True
+
+                try:
+                    extra_tools.append(
+                        tgt.as_tool(
+                            tool_name=f"{ad.name}_agent_tool",
+                            tool_description=f"Call the {ad.name} agent for a subtask and return the result.",
+                            is_enabled=_is_enabled,
+                        )
+                    )
+                except Exception:
+                    pass
+            if extra_tools:
+                base = orch
+                name_to_agent[orchestrator_name] = Agent(
+                    name=base.name,
+                    instructions=base.instructions,
+                    model=base.model,
+                    tools=list(base.tools or []) + extra_tools,
+                    handoffs=getattr(base, "handoffs", None),
+                    model_settings=getattr(base, "model_settings", None),
+                )
+    except Exception:
+        pass
+
+    return name_to_agent
 
 
 ## Removed Responses payload extraction helper
@@ -248,9 +643,18 @@ async def create_agent_session(
     if scenario_id:
         sc = get_scenario(scenario_id)
         if sc:
-            ad = next((a for a in sc.agents if a.name == name), None)
+            ad = next(
+                (
+                    a
+                    for a in sc.agents
+                    if a.name == name or a.name.lower() == str(name).lower()
+                ),
+                None,
+            )
             if ad:
-                tools = _resolve_agent_tools(ad.tools)
+                tools = _resolve_agent_tools(
+                    ad.tools, session_context=store.get_context(session_id)
+                )
     # Apply handoff prompt if extension available and agent participates in handoffs
     try:
         from agents.extensions.handoff_prompt import \
@@ -268,6 +672,12 @@ async def create_agent_session(
     except Exception:
         instr = instructions
 
+    # Guard against realtime-only models when not in Realtime API flow
+    try:
+        if isinstance(model, str) and "realtime" in model:
+            model = "gpt-4.1-mini"
+    except Exception:
+        pass
     prov = _build_model_provider(model)
     if Agent is not None:
         ms = ModelSettings(include_usage=True)
@@ -292,12 +702,38 @@ async def run_agent_turn(
     # Reconstruct lightweight agent each call (cheap); could cache if instructions stable
     name = agent_spec.get("name", "Assistant")
     tools = []
+    runtime_agent = None
     if scenario_id:
-        sc = get_scenario(scenario_id)
-        if sc:
-            ad = next((a for a in sc.agents if a.name == name), None)
-            if ad:
-                tools = _resolve_agent_tools(ad.tools)
+        try:
+            network = build_agent_network_for_runtime(
+                scenario_id, session_id=session_id
+            )
+        except Exception as e:
+            # Log but continue with a single agent so we still produce a reply
+            try:
+                seq = store.next_seq(session_id)
+                store.append_event(
+                    session_id,
+                    Event(
+                        session_id=session_id,
+                        seq=seq,
+                        type="log",
+                        role="system",
+                        agent_id=name,
+                        text=f"runtime_network_error: {e}",
+                        final=True,
+                        timestamp_ms=int(time.time() * 1000),
+                    ),
+                )
+            except Exception:
+                pass
+            network = None
+        if network:
+            runtime_agent = network.get(name)
+            try:
+                tools = list(getattr(runtime_agent, "tools", []) or [])
+            except Exception:
+                tools = []
     # Handoff instructions if applicable
     base_instr = agent_spec.get("instructions", "You are a helpful assistant.")
     try:
@@ -316,7 +752,13 @@ async def run_agent_turn(
     except Exception:
         instr = base_instr
     # Fallback if Agents SDK not available: use single-turn helper
-    prov = _build_model_provider(agent_spec.get("model", "gpt-4.1-mini"))
+    mdl = agent_spec.get("model", "gpt-4.1-mini")
+    try:
+        if isinstance(mdl, str) and "realtime" in mdl:
+            mdl = "gpt-4.1-mini"
+    except Exception:
+        pass
+    prov = _build_model_provider(mdl)
     if not (Agent is not None and Runner is not None):
         # SDK not available; return empty response while logging
         try:
@@ -344,12 +786,18 @@ async def run_agent_turn(
             "usage": None,
         }
     # Agents SDK path
-    ms = ModelSettings(include_usage=True)
-    agent = Agent(
-        name=name, instructions=instr, model=prov, tools=tools, model_settings=ms
-    )
+    if runtime_agent is None:
+        ms = ModelSettings(include_usage=True)
+        agent = Agent(
+            name=name, instructions=instr, model=prov, tools=tools, model_settings=ms
+        )
+    else:
+        agent = runtime_agent
     try:
-        result = await Runner.run(agent, user_input, session=session)
+        ctx = RunContextWrapper(store.get_context(session_id)) if RunContextWrapper else None  # type: ignore
+        result = await Runner.run(
+            agent, user_input, session=session, context=(ctx.context if ctx else None)
+        )
     except Exception as e:
         # Emit a log event and continue to fallback
         try:
@@ -393,6 +841,7 @@ async def run_agent_turn(
                     final=False,
                     data={
                         "tool": tname,
+                        "tool_name": tname,
                         "args": getattr(i, "args", None)
                         or getattr(i, "tool_arguments", None),
                     },
@@ -403,15 +852,79 @@ async def run_agent_turn(
             tout = getattr(i, "tool_output", None) or getattr(i, "output", None)
             if tout is not None:
                 seq = store.next_seq(session_id)
+                res_tool = (
+                    getattr(i, "tool_name", None) or getattr(i, "name", None) or tname
+                )
+                # Optional specialized shaping for agent-as-tool outputs, especially summarizer
+                text_out = None
+                extra: Dict[str, Any] = {}
+                try:
+                    # Summarizer agent-as-tool uses tool name like "summarizer_agent_tool"
+                    if isinstance(res_tool, str) and res_tool.lower().startswith(
+                        "summarizer_"
+                    ):
+                        # Try to parse structured JSON first
+                        raw = tout
+                        parsed = None
+                        if isinstance(raw, str):
+                            import json as _json  # local import to avoid overhead when unused
+
+                            try:
+                                parsed = _json.loads(raw)
+                            except Exception:
+                                parsed = None
+                        elif isinstance(raw, (dict, list)):
+                            parsed = raw
+                        # Build a concise text if we have structured fields
+                        if isinstance(parsed, dict):
+                            summ = (
+                                parsed.get("summary")
+                                or parsed.get("synopsis")
+                                or parsed.get("brief")
+                            )
+                            bullets = parsed.get("bullets") or parsed.get("key_points")
+                            if isinstance(bullets, list):
+                                bullets_txt = "\n".join(
+                                    [
+                                        f"• {str(b).strip()}"
+                                        for b in bullets
+                                        if str(b).strip()
+                                    ]
+                                )
+                            else:
+                                bullets_txt = None
+                            pieces = []
+                            if isinstance(summ, str) and summ.strip():
+                                pieces.append(summ.strip())
+                            if bullets_txt:
+                                pieces.append(bullets_txt)
+                            if pieces:
+                                text_out = "\n".join(pieces)
+                                extra["parsed"] = parsed
+                        # If still no text_out, try to extract bullets from plain text
+                        if not text_out:
+                            s = raw if isinstance(raw, str) else str(raw)
+                            # Keep it concise
+                            text_out = s.strip()
+                    # Default path for other tools
+                    if text_out is None:
+                        text_out = str(tout)
+                except Exception:
+                    text_out = str(tout)
+                # Cap very long outputs for UI safety; raw is preserved in extra if parsed
+                safe_text = (text_out or "")[:4000]
+                data_payload = {"tool": res_tool, "tool_name": res_tool}
+                if extra:
+                    data_payload["extra"] = extra
                 evr = Event(
                     session_id=session_id,
                     seq=seq,
                     type="tool_result",
                     role="tool",
                     agent_id=name,
-                    text=str(tout)[:4000],
+                    text=safe_text,
                     final=True,
-                    data={"tool": tname or getattr(i, "tool_name", None)},
+                    data=data_payload,
                     timestamp_ms=int(time.time() * 1000),
                 )
                 store.append_event(session_id, evr)
@@ -437,6 +950,24 @@ async def run_agent_turn(
         if usage:
             totals = store.add_usage(session_id, usage)
             usage = {**usage, "aggregated": totals}
+        else:
+            # Fallback: count the request so Usage panel isn't stuck at zero
+            totals = store.add_usage(
+                session_id,
+                {
+                    "requests": 1,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "total_tokens": 0,
+                },
+            )
+            usage = {
+                "requests": 1,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+                "aggregated": totals,
+            }
     except Exception:
         pass
 
@@ -447,6 +978,29 @@ async def run_agent_turn(
                 v = getattr(res, attr, None)
                 if isinstance(v, str) and v.strip():
                     return v.strip()
+            # Try new_items content text
+            items = getattr(res, "new_items", None)
+            if isinstance(items, list) and items:
+                parts: list[str] = []
+                for it in items:
+                    # favor assistant-like outputs
+                    seg = getattr(it, "output", None) or getattr(it, "content", None)
+                    if isinstance(seg, list):
+                        for c in seg:
+                            try:
+                                t = (
+                                    c.get("text")
+                                    if isinstance(c, dict)
+                                    else getattr(c, "text", None)
+                                )
+                                if isinstance(t, str) and t.strip():
+                                    parts.append(t.strip())
+                            except Exception:
+                                continue
+                    elif isinstance(seg, str) and seg.strip():
+                        parts.append(seg.strip())
+                if parts:
+                    return "\n".join(parts).strip()
             r = getattr(res, "response", None)
             # dict-like response object support
             if isinstance(r, dict):
@@ -509,15 +1063,19 @@ async def run_agent_turn(
         except Exception:
             pass
     used_fallback = False
+    # As a last resort, provide a tiny placeholder so UI sees a visible assistant reply
+    safe_text = final_text or getattr(result, "final_output", None) or ""
+    if not safe_text:
+        safe_text = ""
     return {
-        "final_output": final_text or getattr(result, "final_output", None) or "",
+        "final_output": safe_text,
         "new_items_len": len(getattr(result, "new_items", []) or []),
         "tool_calls": [
             getattr(i, "tool_name", None)
             for i in (getattr(result, "new_items", []) or [])
             if hasattr(i, "tool_name")
         ],
-        "used_tools": [t.name for t in tools],
+        "used_tools": [getattr(t, "name", None) or str(t) for t in (tools or [])],
         "usage": usage,
         "used_fallback": used_fallback,
     }
@@ -604,81 +1162,21 @@ async def run_supervisor_orchestrate(
                 pass
         return {"chosen_root": chosen, "reason": reason, "changed": changed}
     if not sup:
-        # Fallback heuristic
-        text = (last_user_text or "").lower()
-
-        def pick_agent() -> str:
-            if any(
-                k in text
-                for k in [
-                    "buy",
-                    "price",
-                    "recommend",
-                    "product",
-                    "catalog",
-                    "purchase",
-                    "ticket",
-                ]
-            ):
-                return (
-                    "sales"
-                    if any(a.name == "sales" for a in sc.agents)
-                    else sc.default_root
-                )
-            if any(
-                k in text
-                for k in [
-                    "error",
-                    "issue",
-                    "problem",
-                    "troubleshoot",
-                    "not working",
-                    "help",
-                ]
-            ):
-                return (
-                    "support"
-                    if any(a.name == "support" for a in sc.agents)
-                    else sc.default_root
-                )
-            return sc.default_root
-
-        chosen = pick_agent()
-        changed = False
-        reason = "heuristic_router"
-        if session_id:
-            try:
-                sess = store.get_session(session_id)
-                if not sess:
-                    store.create_session(session_id, active_agent_id=chosen)
-                    sess = store.get_session(session_id)
-                if sess and sess.active_agent_id != chosen:
-                    changed = True
-                    store.set_active_agent(session_id, chosen)
-                    seq = store.next_seq(session_id)
-                    ev = Event(
-                        session_id=session_id,
-                        seq=seq,
-                        type="handoff",
-                        role="system",
-                        agent_id=chosen,
-                        text=None,
-                        final=True,
-                        reason=reason,
-                        timestamp_ms=int(time.time() * 1000),
-                    )
-                    store.append_event(session_id, ev)
-            except Exception:
-                pass
-        return {"chosen_root": chosen, "reason": reason, "changed": changed}
+        # LLM-only mode: no supervisor => do not change active agent here.
+        return {
+            "chosen_root": sc.default_root,
+            "reason": "no_supervisor",
+            "changed": False,
+        }
 
     # Build supervisor with a `handoff` function tool
     decision: Dict[str, Any] = {"target": sc.default_root, "reason": "no_call"}
     try:
+        valid_targets = [a.name for a in sc.agents]
 
         def handoff(target: str, reason: str | None = None):
             nonlocal decision
-            valid = {a.name for a in sc.agents}
+            valid = set(valid_targets)
             if target not in valid:
                 decision = {
                     "target": decision.get("target", sc.default_root),
@@ -688,22 +1186,35 @@ async def run_supervisor_orchestrate(
                 decision = {"target": target, "reason": reason or "supervisor_choice"}
             return {"ok": True, **decision}
 
-        handoff_tool = function_tool(
-            handoff,
-            name="handoff",
-            description="Select the best agent to handle the user.",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "target": {
-                        "type": "string",
-                        "description": "Agent name to activate",
-                    },
-                    "reason": {"type": "string"},
+        handoff_schema = {
+            "type": "object",
+            "properties": {
+                "target": {
+                    "type": "string",
+                    "description": "Agent name to activate (one of: %s)"
+                    % ", ".join(valid_targets),
+                    "enum": valid_targets,
                 },
-                "required": ["target"],
+                "reason": {"type": "string"},
             },
-        )
+            "required": ["target"],
+        }
+        # Create handoff tool with compatibility across SDK versions
+        try:
+            handoff_tool = function_tool(
+                handoff,
+                name="handoff",
+                description="Select the best agent to handle the user.",
+                parameters=handoff_schema,
+            )
+        except TypeError:
+            try:
+                handoff_tool = function_tool(handoff, handoff_schema)  # type: ignore[arg-type]
+            except TypeError:
+                try:
+                    handoff_tool = function_tool(handoff, parameters=handoff_schema)  # type: ignore[call-arg]
+                except TypeError:
+                    handoff_tool = function_tool(handoff)
 
         # Apply model provider
         prov = _build_model_provider(sup.model)
@@ -738,9 +1249,25 @@ async def run_supervisor_orchestrate(
         session = get_or_create_session(session_id or f"sup-{sc.id}")
         try:
             await Runner.run(supervisor, last_user_text or "", session=session)
-        except Exception:
-            # Non-fatal: fall back to heuristic below
-            pass
+        except Exception as e:
+            # Log a supervisor error event for debugging
+            try:
+                seq = store.next_seq(session_id or f"sup-{sc.id}")
+                store.append_event(
+                    session_id or f"sup-{sc.id}",
+                    Event(
+                        session_id=(session_id or f"sup-{sc.id}"),
+                        seq=seq,
+                        type="log",
+                        role="system",
+                        agent_id=sup.name,
+                        text=f"supervisor_error: {e}",
+                        final=True,
+                        timestamp_ms=int(time.time() * 1000),
+                    ),
+                )
+            except Exception:
+                pass
     except Exception:
         # Entire supervisor setup failed; fall back
         pass
@@ -748,50 +1275,13 @@ async def run_supervisor_orchestrate(
     chosen = decision.get("target", sc.default_root)
     reason = decision.get("reason", "supervisor_default")
 
-    # If supervisor didn't call the handoff tool, use heuristic as a fallback guidance
+    # If supervisor didn't call the handoff tool, do not change active agent.
     if reason == "no_call":
-        text = (last_user_text or "").lower()
-
-        def pick_agent() -> str:
-            if any(
-                k in text
-                for k in [
-                    "buy",
-                    "price",
-                    "recommend",
-                    "product",
-                    "catalog",
-                    "purchase",
-                    "ticket",
-                ]
-            ):
-                return (
-                    "sales"
-                    if any(a.name == "sales" for a in sc.agents)
-                    else sc.default_root
-                )
-            if any(
-                k in text
-                for k in [
-                    "error",
-                    "issue",
-                    "problem",
-                    "troubleshoot",
-                    "not working",
-                    "help",
-                ]
-            ):
-                return (
-                    "support"
-                    if any(a.name == "support" for a in sc.agents)
-                    else sc.default_root
-                )
-            return sc.default_root
-
-        heuristic = pick_agent()
-        if heuristic != chosen:
-            chosen = heuristic
-            reason = "supervisor_no_call_heuristic"
+        return {
+            "chosen_root": sc.default_root,
+            "reason": "supervisor_no_call",
+            "changed": False,
+        }
     changed = False
     if session_id:
         try:

@@ -74,6 +74,44 @@ async def tools_list():
     return items
 
 
+class ToolsCatalogItem(BaseModel):
+    agent: str
+    allowed_tools: list[str]
+    agent_tools: list[str] | None = (
+        None  # agents exposed as tools to this agent (runtime wiring)
+    )
+
+
+@router.get("/tools/catalog", response_model=list[ToolsCatalogItem])
+async def tools_catalog(scenario_id: str = Query("default")):
+    sc = get_scenario(scenario_id)
+    if not sc:
+        raise HTTPException(status_code=404, detail="Scenario not found")
+    out: list[ToolsCatalogItem] = []
+    # Orchestrator candidates that receive other agents as tools: supervisor role or default_root
+    orchestrator_names = set(
+        [
+            a.name
+            for a in sc.agents
+            if getattr(a, "role", "").lower() == "supervisor"
+            or a.name == sc.default_root
+        ]
+    )
+    all_agent_names = [a.name for a in sc.agents]
+    for a in sc.agents:
+        agent_tools = None
+        if a.name in orchestrator_names:
+            agent_tools = [n for n in all_agent_names if n != a.name]
+        out.append(
+            ToolsCatalogItem(
+                agent=a.name,
+                allowed_tools=list(a.tools or []),
+                agent_tools=agent_tools,
+            )
+        )
+    return out
+
+
 # Built-in tools config/status (for docs/debug)
 class ToolConfigStatus(BaseModel):
     name: str

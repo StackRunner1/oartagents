@@ -4,6 +4,7 @@ import {
   computeStreaming,
   ChatMessage,
 } from '../../lib/chat';
+import { ToolOutputCard } from './ToolOutputCard';
 
 export interface ChatPanelProps {
   events: any[];
@@ -15,6 +16,7 @@ export interface ChatPanelProps {
   input: string;
   setInput: (v: string) => void;
   onSend: () => void;
+  onToolAction?: (action: { kind: string; payload?: any }) => void;
   handoffEvents?: {
     id: string;
     from: string;
@@ -34,15 +36,14 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   input,
   setInput,
   onSend,
+  onToolAction,
   handoffEvents = [],
 }) => {
-  const chatMessages: ChatMessage[] = useMemo(
-    () =>
-      buildChatMessages(events, transcript, realtimeLogs, {
-        source: activeAgentName === 'LLM' ? 'llm' : 'sdk',
-      }),
-    [events, transcript, realtimeLogs, activeAgentName]
-  );
+  const chatMessages: ChatMessage[] = useMemo(() => {
+    return buildChatMessages(events, transcript, realtimeLogs, {
+      source: activeAgentName === 'LLM' ? 'llm' : 'sdk',
+    });
+  }, [events, transcript, realtimeLogs, activeAgentName]);
   const streaming = useMemo(() => computeStreaming(events), [events]);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
@@ -50,7 +51,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   }, [chatMessages.length]);
 
   return (
-    <section className="bg-gray-900/70 border border-gray-800 rounded-lg p-4 flex flex-col h-[520px]">
+    <section className="bg-gray-900/70 border border-gray-800 rounded-lg p-4 flex flex-col h-[720px]">
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-3">
           <h2 className="text-sm font-semibold text-teal-400">Chat</h2>
@@ -74,41 +75,60 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         {chatMessages.length === 0 && (
           <div className="text-gray-600 text-xs">No messages yet.</div>
         )}
-        {chatMessages.map((m) => (
-          <div
-            key={m.id}
-            className={`flex ${
-              m.kind === 'user' ? 'justify-end' : 'justify-start'
-            }`}>
-            <div
-              className={`group relative max-w-[75%] rounded-md px-3 py-2 text-sm leading-snug shadow-sm whitespace-pre-wrap break-words ${
-                m.kind === 'user'
-                  ? 'bg-teal-600/80 text-white'
-                  : m.kind === 'assistant'
-                  ? 'bg-gray-800 text-gray-100'
-                  : 'bg-indigo-800/40 text-indigo-100'
-              }`}
-              title={m.role}>
-              <span
-                className={`inline-block align-middle text-[9px] font-medium tracking-wide mr-2 px-1.5 py-0.5 rounded ${
-                  m.source === 'realtime'
-                    ? 'bg-purple-600/30 text-purple-200 border border-purple-500/40'
-                    : 'bg-sky-600/30 text-sky-200 border border-sky-500/40'
-                }`}>
-                {m.source === 'realtime' ? 'RT' : 'SDK'}
-              </span>
-              {m.text ? (
-                <>{m.text}</>
+        {chatMessages.map((m) => {
+          const wrapperClass = `flex ${
+            m.kind === 'user' ? 'justify-end' : 'justify-start'
+          }`;
+          const bubbleClass =
+            m.kind === 'user'
+              ? 'bg-teal-600/80 text-white'
+              : m.kind === 'assistant'
+              ? 'bg-gray-800 text-gray-100'
+              : 'bg-indigo-800/40 text-indigo-100';
+          const tagClass =
+            m.source === 'realtime'
+              ? 'bg-purple-600/30 text-purple-200 border border-purple-500/40'
+              : 'bg-sky-600/30 text-sky-200 border border-sky-500/40';
+          return (
+            <div key={m.id} className={wrapperClass}>
+              {m.kind === 'tool' ? (
+                <div className="max-w-[75%]">
+                  <ToolOutputCard
+                    toolName={m.toolName || 'tool'}
+                    text={m.text}
+                    data={m.toolData}
+                    onAction={(action) => onToolAction?.(action)}
+                    compact
+                  />
+                </div>
               ) : (
-                <span className="opacity-50 italic">(no textual content)</span>
+                <div
+                  className={`group relative max-w-[75%] rounded-md px-3 py-2 text-sm leading-snug shadow-sm whitespace-pre-wrap break-words ${bubbleClass}`}
+                  title={m.role}>
+                  <span
+                    className={`inline-block align-middle text-[9px] font-medium tracking-wide mr-2 px-1.5 py-0.5 rounded ${tagClass}`}>
+                    {m.source === 'realtime' ? 'RT' : 'SDK'}
+                  </span>
+                  {m.text ? (
+                    <>{m.text}</>
+                  ) : (
+                    <span className="opacity-50 italic">
+                      (no textual content)
+                    </span>
+                  )}
+                </div>
               )}
             </div>
-          </div>
-        ))}
+          );
+        })}
         {handoffEvents.map((h) => (
           <div key={h.id} className="flex justify-start">
-            <div className="max-w-[75%] rounded-md px-3 py-2 text-xs bg-indigo-900/40 text-indigo-200 border border-indigo-800">
-              <span className="font-semibold">Handoff</span>: {h.from} → {h.to}
+            <div className="max-w-[75%] rounded-md px-3 py-2 text-xs bg-indigo-900/30 text-indigo-100 border border-indigo-800/70">
+              <span className="inline-block align-middle text-[9px] font-medium tracking-wide mr-2 px-1.5 py-0.5 rounded bg-indigo-800/50 border border-indigo-700/70">
+                Handoff
+              </span>
+              <span className="font-semibold">{h.from}</span> →{' '}
+              <span className="font-semibold">{h.to}</span>
               {h.reason ? (
                 <span className="opacity-80"> — {h.reason}</span>
               ) : null}
