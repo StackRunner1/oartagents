@@ -33,6 +33,11 @@ simple allowlists.
   There is no heuristic switching.
 - Tool Output UX: Chat shows “Used <tool> tool”; the Tool Outputs panel shows
   the full payload with actions (e.g., open Summary).
+- Handoff UX: A compact badge appears inline in Chat when a handoff is
+  suggested, while a dedicated "Handoff Suggestions" panel in the right column
+  lists suggestions with Apply/Dismiss.
+- Screenshot friendliness: Chat panel height increased to show more context in
+  captures; Agent Graph panel height matches.
 
 ## Backend endpoints (SDK path)
 
@@ -100,7 +105,8 @@ invalid suggestions.
 - Handoff suggestions target invalid names: Ensure the supervisor’s handoff
   schema is constrained to valid `handoff_targets`.
 - Graph visualization missing agent-tools: Verify `build_agent_network_for_viz`
-  appends `agent.as_tool(...)` for the orchestrator.
+  appends `agent.as_tool(...)` for the orchestrator and returns the updated root
+  instance so agent-tools (e.g., Summarizer) appear for the selected root.
 
 ## Notes
 
@@ -111,19 +117,56 @@ invalid suggestions.
   (e.g., `gpt-4.1-mini`).
 - For Windows, Graphviz detection tries common locations and `GRAPHVIZ_DOT`.
 
-```mermaid
-flowchart TD
-  subgraph Default
-    A[Supervisor] -->|handoff| G[General]
-    A -->|handoff| S[Sales]
-    A -->|handoff| U[Support]
-    A -. agent-tool .-> Z[Summarizer]
-  end
-  subgraph Project Planning
-    P[Planner] -->|handoff| E[Estimator]
-    E -->|handoff| P
-  end
-```
+## Current Status of Implementation
+
+### Scenario switching and discovery
+
+- You can list scenarios and fetch one by id.
+- The UI has a Scenario dropdown; switching scenarios rehydrates the agent list
+  and selects the correct default root.
+- The active agent persists until you explicitly Apply a handoff (no heuristic
+  auto-switching).
+
+### Agents and handoffs (LLM-native)
+
+- Agents are defined per scenario (Default: General, Sales, Support; Project
+  Planning: Planner, Estimator).
+- Handoff suggestions are emitted via native Agents SDK handoffs.
+- The UI shows a compact badge in Chat and a right-column Handoff Suggestions
+  panel with Apply/Dismiss.
+- Applying a handoff updates the active agent immediately and is recorded in
+  events.
+
+### Tools and gating
+
+- Tools are resolved per agent with roles-based gating (e.g., product_search for
+  Sales).
+- A read-only Tool Catalog endpoint exists; the UI shows allowed tools for the
+  active agent.
+- Agents-as-tools concept is present and shown in the UI list, but GraphViz does
+  not yet reliably visualize them.
+
+### Events and Chat UX
+
+- Optimistic user message rendering with reconciliation avoids the “first
+  message disappears” bug.
+- Tool calls/results are visible in Chat (compact) and in a dedicated Tool
+  Outputs panel (structured details).
+- A Context panel shows the session context; the Usage panel tracks
+  requests/tokens.
+- Chat and Graph panels are taller for easier screenshots.
+
+### Visualization (GraphViz)
+
+- Agent graph and handoff edges render reliably.
+- Agents-as-tools are not consistently visualized (not always mirrored at the
+  selected root). We paused backend changes that previously caused regressions.
+
+### Stability
+
+- Session creation flow is working after reverting risky backend edits.
+- We’ve kept the backend surface stable while improving the frontend UX and tool
+  visibility.
 
 ---
 

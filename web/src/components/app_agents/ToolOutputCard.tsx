@@ -19,6 +19,17 @@ export const ToolOutputCard: React.FC<ToolOutputCardProps> = ({
   onAction,
   compact = false,
 }) => {
+  // Normalize tool name from various fields
+  const resolvedName = useMemo(() => {
+    const rawCandidates = [data?.tool, data?.tool_name, data?.name, toolName];
+    const candidates = (rawCandidates.filter(Boolean) as string[]).map((s) =>
+      s.toString()
+    );
+    const first = candidates.find(
+      (n) => n && n.trim() && n.trim().toLowerCase() !== 'tool'
+    );
+    return first || '';
+  }, [toolName, data]);
   const [expanded, setExpanded] = useState(false);
   const parsed = useMemo(() => {
     const p = data?.extra?.parsed;
@@ -29,7 +40,7 @@ export const ToolOutputCard: React.FC<ToolOutputCardProps> = ({
   // Example mapping: summarizer outputs -> Open Summary Panel
   const actions = useMemo(() => {
     const acts: { label: string; kind: string; payload?: any }[] = [];
-    if (toolName.toLowerCase().startsWith('summarizer')) {
+    if (resolvedName.toLowerCase().startsWith('summarizer')) {
       acts.push({
         label: 'Open Summary',
         kind: 'open_summary',
@@ -37,7 +48,7 @@ export const ToolOutputCard: React.FC<ToolOutputCardProps> = ({
       });
     }
     // Example for a FileSearch or WebSearch: link into app routes/panels
-    if (toolName.toLowerCase().includes('websearch')) {
+    if (resolvedName.toLowerCase().includes('websearch')) {
       acts.push({
         label: 'View Web Sources',
         kind: 'show_web_sources',
@@ -45,11 +56,14 @@ export const ToolOutputCard: React.FC<ToolOutputCardProps> = ({
       });
     }
     return acts;
-  }, [toolName, parsed, text]);
+  }, [resolvedName, parsed, text]);
 
   if (compact) {
-    const hasName = toolName && toolName.toLowerCase() !== 'tool';
-    const label = hasName ? `Used ${toolName} tool` : 'Used tool';
+    const hasName =
+      resolvedName &&
+      resolvedName.toLowerCase() !== 'tool' &&
+      resolvedName.trim() !== '';
+    const label = hasName ? `Used ${resolvedName} tool` : 'Used tool';
     return (
       <div className="rounded-md border border-sky-800 bg-sky-950/40 text-sky-100">
         <div className="px-3 py-2 flex items-start justify-between gap-2">
@@ -72,8 +86,8 @@ export const ToolOutputCard: React.FC<ToolOutputCardProps> = ({
             Tool
           </span>
           <span className="opacity-90">
-            {toolName && toolName.toLowerCase() !== 'tool'
-              ? toolName
+            {resolvedName && resolvedName.toLowerCase() !== 'tool'
+              ? resolvedName
               : '(unknown tool)'}
           </span>
         </div>

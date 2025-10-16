@@ -51,7 +51,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   }, [chatMessages.length]);
 
   return (
-    <section className="bg-gray-900/70 border border-gray-800 rounded-lg p-4 flex flex-col h-[520px]">
+    <section className="bg-gray-900/70 border border-gray-800 rounded-lg p-4 flex flex-col h-[720px]">
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-3">
           <h2 className="text-sm font-semibold text-teal-400">Chat</h2>
@@ -123,8 +123,12 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         })}
         {handoffEvents.map((h) => (
           <div key={h.id} className="flex justify-start">
-            <div className="max-w-[75%] rounded-md px-3 py-2 text-xs bg-indigo-900/40 text-indigo-200 border border-indigo-800">
-              <span className="font-semibold">Handoff</span>: {h.from} → {h.to}
+            <div className="max-w-[75%] rounded-md px-3 py-2 text-xs bg-indigo-900/30 text-indigo-100 border border-indigo-800/70">
+              <span className="inline-block align-middle text-[9px] font-medium tracking-wide mr-2 px-1.5 py-0.5 rounded bg-indigo-800/50 border border-indigo-700/70">
+                Handoff
+              </span>
+              <span className="font-semibold">{h.from}</span> →{' '}
+              <span className="font-semibold">{h.to}</span>
               {h.reason ? (
                 <span className="opacity-80"> — {h.reason}</span>
               ) : null}
