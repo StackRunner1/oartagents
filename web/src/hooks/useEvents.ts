@@ -56,14 +56,59 @@ export function useEvents(
           setEvents((prev) => {
             const merged = [...prev];
             for (const ev of data) {
+              // If this incoming event has the same message_id as an optimistic placeholder
+              // replace the optimistic one with the real server event
+              if (
+                ev?.type === 'message' &&
+                ev?.message_id &&
+                merged.some(
+                  (e) =>
+                    e?.type === 'message' &&
+                    e?.message_id === ev.message_id &&
+                    e?.data?.optimistic
+                )
+              ) {
+                for (let i = 0; i < merged.length; i++) {
+                  const e = merged[i];
+                  if (
+                    e?.type === 'message' &&
+                    e?.message_id === ev.message_id &&
+                    e?.data?.optimistic
+                  ) {
+                    merged[i] = ev;
+                    break;
+                  }
+                }
+                continue;
+              }
+              // Otherwise, avoid pushing exact-duplicate seqs
               if (!merged.some((e) => e.seq === ev.seq)) merged.push(ev);
             }
-            merged.sort((a, b) => a.seq - b.seq);
-            const maxSeq = merged.length
-              ? merged[merged.length - 1].seq
-              : lastSeq;
+            // Drop any residual optimistic messages that now have an equal or higher real seq following them
+            const realIds = new Set(
+              merged
+                .filter((e) => e?.type === 'message' && !e?.data?.optimistic)
+                .map((e) => e.message_id)
+                .filter(Boolean)
+            );
+            const compacted = merged.filter((e) => {
+              if (
+                e?.type === 'message' &&
+                e?.data?.optimistic &&
+                e?.message_id
+              ) {
+                return !realIds.has(e.message_id);
+              }
+              return true;
+            });
+            compacted.sort(
+              (a, b) => (Number(a.seq) || 0) - (Number(b.seq) || 0)
+            );
+            const maxSeq = compacted.length
+              ? Number(compacted[compacted.length - 1].seq)
+              : Number(lastSeq) || 0;
             updateLastSeq(maxSeq);
-            return merged;
+            return compacted;
           });
           // New data: reset backoff and mark activity
           backoffRef.current = minMs;

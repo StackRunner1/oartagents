@@ -373,6 +373,40 @@ def build_agent_network_for_viz(scenario_id: str, root_agent: str | None = None)
                     tools=list(base.tools or []) + extra_tools,
                     handoffs=getattr(base, "handoffs", None),
                 )
+        # If the requested root_agent is different and present, mirror the agent-as-tools for that root too
+        if root_agent:
+            ra = root_agent
+            # Case-insensitive lookup for the provided root agent string
+            if ra not in name_to_agent:
+                lower_map = {k.lower(): k for k in name_to_agent.keys()}
+                ra = lower_map.get(root_agent.lower(), root_agent)
+            if ra in name_to_agent and ra != orchestrator_name:
+                base = name_to_agent[ra]
+                extra_tools2 = []
+                for ad in sc.agents:
+                    if ad.name == ra:
+                        continue
+                    tgt = name_to_agent.get(ad.name)
+                    if tgt is None:
+                        continue
+                    try:
+                        extra_tools2.append(
+                            tgt.as_tool(
+                                tool_name=f"{ad.name}_agent_tool",
+                                tool_description=f"Call the {ad.name} agent for a subtask and return the result.",
+                                is_enabled=lambda *_args, **_kwargs: True,
+                            )
+                        )
+                    except Exception:
+                        pass
+                if extra_tools2:
+                    name_to_agent[ra] = Agent(
+                        name=base.name,
+                        instructions=base.instructions,
+                        model=base.model,
+                        tools=list(base.tools or []) + extra_tools2,
+                        handoffs=getattr(base, "handoffs", None),
+                    )
     except Exception:
         pass
     return root_agent_obj, name_to_agent
@@ -807,6 +841,7 @@ async def run_agent_turn(
                     final=False,
                     data={
                         "tool": tname,
+                        "tool_name": tname,
                         "args": getattr(i, "args", None)
                         or getattr(i, "tool_arguments", None),
                     },
@@ -878,7 +913,7 @@ async def run_agent_turn(
                     text_out = str(tout)
                 # Cap very long outputs for UI safety; raw is preserved in extra if parsed
                 safe_text = (text_out or "")[:4000]
-                data_payload = {"tool": res_tool}
+                data_payload = {"tool": res_tool, "tool_name": res_tool}
                 if extra:
                     data_payload["extra"] = extra
                 evr = Event(

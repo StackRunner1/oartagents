@@ -48,6 +48,8 @@ export const ToolOutputCard: React.FC<ToolOutputCardProps> = ({
   }, [toolName, parsed, text]);
 
   if (compact) {
+    const hasName = toolName && toolName.toLowerCase() !== 'tool';
+    const label = hasName ? `Used ${toolName} tool` : 'Used tool';
     return (
       <div className="rounded-md border border-sky-800 bg-sky-950/40 text-sky-100">
         <div className="px-3 py-2 flex items-start justify-between gap-2">
@@ -55,7 +57,7 @@ export const ToolOutputCard: React.FC<ToolOutputCardProps> = ({
             <span className="px-1.5 py-0.5 rounded bg-sky-800/60 border border-sky-700 mr-2">
               Tool
             </span>
-            <span className="opacity-90">Used {toolName} tool</span>
+            <span className="opacity-90">{label}</span>
           </div>
         </div>
       </div>
@@ -69,7 +71,11 @@ export const ToolOutputCard: React.FC<ToolOutputCardProps> = ({
           <span className="px-1.5 py-0.5 rounded bg-sky-800/60 border border-sky-700 mr-2">
             Tool
           </span>
-          <span className="opacity-90">{toolName}</span>
+          <span className="opacity-90">
+            {toolName && toolName.toLowerCase() !== 'tool'
+              ? toolName
+              : '(unknown tool)'}
+          </span>
         </div>
         <div className="flex gap-2">
           {actions.map((a) => (

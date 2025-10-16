@@ -27,7 +27,15 @@ export const ToolOutputsPanel: React.FC<ToolOutputsPanelProps> = ({
           {toolResults.map((ev: any, i: number) => (
             <li key={`${ev.seq}:${i}`}>
               <ToolOutputCard
-                toolName={ev?.data?.tool || 'tool'}
+                toolName={
+                  ev?.data?.tool ||
+                  ev?.tool ||
+                  ev?.tool_name ||
+                  ev?.name ||
+                  ev?.data?.tool_name ||
+                  ev?.data?.name ||
+                  'tool'
+                }
                 text={typeof ev.text === 'string' ? ev.text : ''}
                 data={ev.data}
                 onAction={onAction}

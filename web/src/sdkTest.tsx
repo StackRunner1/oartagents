@@ -11,6 +11,7 @@ import { ChatPanel } from './components/app_agents/ChatPanel';
 import { RawEventsPanel } from './components/app_agents/RawEventsPanel';
 import { UsagePanel } from './components/app_agents/UsagePanel';
 import { ToolOutputsPanel } from './components/app_agents/ToolOutputsPanel';
+import { ContextPanel } from './components/app_agents/ContextPanel';
 // Providers panel is redundant in SDK-only mode; removed from this page
 import { useEvents } from './hooks/useEvents';
 
@@ -201,9 +202,12 @@ export default function SDKTestStandalone() {
     setLoading(true);
     setError(null);
     try {
+      // Clear input immediately for better UX (even before network completes)
+      const textToSend = input;
+      setInput('');
       // Prepare abortable request and refresh events immediately so the user message shows up
       const ac = new AbortController();
-      const timeout = window.setTimeout(() => ac.abort(), 12000);
+      const timeout = window.setTimeout(() => ac.abort(), 20000);
       const clientMessageId =
         globalThis.crypto && 'randomUUID' in globalThis.crypto
           ? (globalThis.crypto as any).randomUUID()
@@ -213,7 +217,7 @@ export default function SDKTestStandalone() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           session_id: sessionId,
-          user_input: input,
+          user_input: textToSend,
           client_message_id: clientMessageId,
           scenario_id: scenarioId,
           agent: {
@@ -227,15 +231,22 @@ export default function SDKTestStandalone() {
       // Optimistically add local user message with the same client_message_id to preserve order
       setEvents((prev) => {
         const nowMs = Date.now();
-        const maxSeq = prev.reduce((m, e) => Math.max(m, e.seq || 0), 0);
+        // Use a fractional temporary seq to avoid colliding with server-assigned integer seqs
+        const prevMax = prev.reduce(
+          (m, e) => Math.max(m, Number((e as any).seq) || 0),
+          0
+        );
+        const base = Math.max(prevMax, Number(lastSeq) || 0);
+        const tempSeq = base + 0.5; // server uses ints: 1,2,... so 0.5,1.5,... will never collide
         const optimistic = {
           session_id: sessionId,
-          seq: maxSeq + 1,
+          seq: tempSeq,
           type: 'message',
           message_id: clientMessageId,
           role: 'user',
           agent_id: null,
-          text: input,
+          // Use the same text we sent to avoid race with cleared input
+          text: textToSend,
           final: true,
           timestamp_ms: nowMs,
           data: { optimistic: true, client_message_id: clientMessageId },
@@ -422,6 +433,20 @@ export default function SDKTestStandalone() {
   const [handoffEvents, setHandoffEvents] = useState<
     { id: string; from: string; to: string; reason: string; at: string }[]
   >([]);
+
+  // Derive handoff suggestions from events so the Actions section appears
+  useEffect(() => {
+    const suggestions = (events || [])
+      .filter((e: any) => e && e.type === 'handoff_suggestion')
+      .map((e: any) => ({
+        id: String(e.seq ?? e.timestamp_ms ?? Math.random()),
+        from: String(activeAgent.name),
+        to: String(e.agent_id || ''),
+        reason: String(e.reason || ''),
+        at: e.timestamp_ms ? new Date(e.timestamp_ms).toISOString() : '',
+      }));
+    setHandoffEvents(suggestions);
+  }, [events, activeAgent.name]);
 
   // Minimal Summary drawer state
   const [summaryOpen, setSummaryOpen] = useState(false);
@@ -696,6 +721,8 @@ export default function SDKTestStandalone() {
           />
 
           <ToolOutputsPanel events={events} onAction={handleToolAction} />
+
+          <ContextPanel baseUrl={baseUrl} sessionId={sessionId} />
         </div>
 
         {/* Final Output panel hidden for now */}

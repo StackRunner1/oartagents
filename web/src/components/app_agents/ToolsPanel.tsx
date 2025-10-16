@@ -84,7 +84,7 @@ export const ToolsPanel: React.FC<ToolsPanelProps> = ({
     return () => {
       alive = false;
     };
-  }, [baseUrl, activeAgentName]);
+  }, [baseUrl, activeAgentName, scenarioId]);
 
   // Group tool_call + tool_result by seq proximity and tool name
   const groupedCalls = React.useMemo(() => {

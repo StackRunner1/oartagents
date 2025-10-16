@@ -74,6 +74,21 @@ export function buildChatMessages(
   realtimeLogs: any[],
   opts?: { source?: ChatSource }
 ): ChatMessage[] {
+  function resolveToolName(ev: any): string {
+    try {
+      return (
+        ev?.data?.tool ||
+        ev?.tool ||
+        ev?.tool_name ||
+        ev?.name ||
+        ev?.data?.tool_name ||
+        ev?.data?.name ||
+        ''
+      );
+    } catch {
+      return '';
+    }
+  }
   const msgs: ChatMessage[] = [];
   const source: ChatSource = opts?.source || 'sdk';
   if (events.length > 0) {
@@ -156,7 +171,7 @@ export function buildChatMessages(
           source,
         });
       } else if (ev.type === 'tool_call') {
-        const tname = ev?.data?.tool || ev.tool_name || ev.name || '';
+        const tname = resolveToolName(ev);
         msgs.push({
           id: `tool_call:${ev.seq}`,
           role: 'tool',
@@ -168,7 +183,7 @@ export function buildChatMessages(
           source,
         });
       } else if (ev.type === 'tool_result') {
-        const tname = ev?.data?.tool || ev.tool_name || ev.name || '';
+        const tname = resolveToolName(ev);
         msgs.push({
           id: `tool_result:${ev.seq}`,
           role: 'tool',

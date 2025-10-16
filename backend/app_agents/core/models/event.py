@@ -8,9 +8,11 @@ from pydantic import BaseModel, Field
 EventType = Literal[
     "message",
     "handoff",
+    "handoff_suggestion",
     "tool_call",
     "tool_result",
     "token",
+    "log",
     "final",
     "error",
 ]
