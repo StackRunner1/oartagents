@@ -4,6 +4,21 @@ A quick guide to running multiple agent cohorts (aka scenarios) side-by-side,
 switching between them in the UI, and governing tools and agents-as-tools with
 simple allowlists.
 
+## Current status (TL;DR)
+
+- Scenario switching works with correct default roots; the active agent persists
+  until you explicitly Apply a handoff.
+- Handoff Suggestions panel lives in the right column, with a compact inline
+  chip shown in Chat; Apply/Dismiss works.
+- Tools are resolved per agent with roles-based gating; Tool Outputs, Context,
+  and Usage panels are functional.
+- Visualization is stable for agents and handoffs; agents-as-tools aren’t
+  consistently visualized yet.
+- Tool names are occasionally missing in chat/panel; we’ll make this 100%
+  reliable in a follow-up.
+- Overall session creation and event flows are stable after reverting risky viz
+  edits.
+
 ## Why cohorts (scenarios)?
 
 - Separation of concerns: Keep related agents and tools grouped by business

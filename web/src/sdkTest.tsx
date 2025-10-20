@@ -35,6 +35,8 @@ export default function SDKTestStandalone() {
   const [netWarn] = useState<string | null>(null);
   const [pttActive, setPttActive] = useState(false);
   const [sessionOpen, setSessionOpen] = useState(true);
+  const [autoChain, setAutoChain] = useState<boolean>(true);
+  const [maxHops, setMaxHops] = useState<number>(3);
   const [chatStarted, setChatStarted] = useState(false);
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const { events, lastSeq, setEvents, setLastSeq, warn, refresh } = useEvents(
@@ -42,6 +44,8 @@ export default function SDKTestStandalone() {
     sessionId || undefined,
     { enabled: autoRefresh, visibilityPause: true, idleStopMs: 45000 }
   );
+
+  // (moved below activeAgentId definition)
 
   // --- Multi-agent scaffolding ---
   interface AgentDef {
@@ -75,6 +79,47 @@ export default function SDKTestStandalone() {
   ]);
   const [activeAgentId, setActiveAgentId] = useState<string>('general');
   const activeAgent = agents.find((a) => a.id === activeAgentId) || agents[0];
+  // Trigger graph refresh when active agent changes or when a handoff/handoff_override/turn_end occurs
+  const graphRefreshKey = React.useMemo(() => {
+    const lastHandoffLike = [...(events || [])]
+      .filter(
+        (e: any) =>
+          e &&
+          (e.type === 'handoff' ||
+            e.type === 'handoff_override' ||
+            (e.type === 'log' && e.text === 'turn_end'))
+      )
+      .slice(-1)[0];
+    return `${activeAgentId}:${lastHandoffLike ? lastHandoffLike.seq : ''}`;
+  }, [events, activeAgentId]);
+  // Keep Agent panel in sync with server state: prefer last handoff event, else last assistant message's agent_id
+  useEffect(() => {
+    if (!Array.isArray(events) || events.length === 0) return;
+    let target: string | null = null;
+    // Prefer explicit handoff_override, then handoff
+    const lastOverride = [...events]
+      .filter((e: any) => e && e.type === 'handoff_override' && e.agent_id)
+      .slice(-1)[0];
+    const lastHandoff = lastOverride
+      ? lastOverride
+      : [...events]
+          .filter((e: any) => e && e.type === 'handoff' && e.agent_id)
+          .slice(-1)[0];
+    if (lastHandoff && typeof lastHandoff.agent_id === 'string') {
+      target = lastHandoff.agent_id.toLowerCase();
+    } else {
+      const lastAssistant = [...events]
+        .filter(
+          (e: any) =>
+            e && e.type === 'message' && e.role === 'assistant' && e.agent_id
+        )
+        .slice(-1)[0];
+      if (lastAssistant && typeof lastAssistant.agent_id === 'string') {
+        target = lastAssistant.agent_id.toLowerCase();
+      }
+    }
+    if (target && target !== activeAgentId) setActiveAgentId(target);
+  }, [events, activeAgentId]);
   const effectiveInstructions = useMemo(() => {
     return `${instructions}\n\n[Active Agent: ${activeAgent.name}]\n${activeAgent.instructions}`.trim();
   }, [instructions, activeAgent]);
@@ -187,6 +232,21 @@ export default function SDKTestStandalone() {
       // On new session, reset events tracking
       setEvents([]);
       setLastSeq(0);
+      // Persist routing preferences to session context (controls chaining & hops on server)
+      try {
+        await fetch(
+          `${baseUrl}/api/sdk/session/context?session_id=${encodeURIComponent(
+            data.session_id
+          )}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              routing: { auto_chain: autoChain, max_hops: maxHops },
+            }),
+          }
+        );
+      } catch {}
     } catch (e: any) {
       setError(e.message);
     } finally {
@@ -221,11 +281,7 @@ export default function SDKTestStandalone() {
           user_input: textToSend,
           client_message_id: clientMessageId,
           scenario_id: scenarioId,
-          agent: {
-            name: activeAgent.id, // ensure backend turns run with the right agent
-            instructions: effectiveInstructions,
-            model,
-          },
+          // Do not send agent as the router source-of-truth is now the server
         }),
         signal: ac.signal,
       });
@@ -463,6 +519,27 @@ export default function SDKTestStandalone() {
     // console.log('[Tool action]', action);
   }
 
+  // Persist routing preferences to the session context when toggles change
+  useEffect(() => {
+    if (!sessionId) return;
+    (async () => {
+      try {
+        await fetch(
+          `${baseUrl}/api/sdk/session/context?session_id=${encodeURIComponent(
+            sessionId
+          )}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              routing: { auto_chain: autoChain, max_hops: maxHops },
+            }),
+          }
+        );
+      } catch {}
+    })();
+  }, [autoChain, maxHops, sessionId, baseUrl]);
+
   async function applyHandoff(targetAgent: string) {
     try {
       if (!sessionId) return;
@@ -552,6 +629,10 @@ export default function SDKTestStandalone() {
                   error={error}
                   realtimeConnected={realtimeConnected}
                   hideAgentControls
+                  autoChain={autoChain}
+                  setAutoChain={setAutoChain}
+                  maxHops={maxHops}
+                  setMaxHops={setMaxHops}
                 />
               </div>
             )}
@@ -626,6 +707,7 @@ export default function SDKTestStandalone() {
             onSend={sendMessage}
             onToolAction={handleToolAction}
             handoffEvents={handoffEvents}
+            onApplySuggestion={applyHandoff}
           />
 
           {/* Handoff suggestions moved to right column panel */}
@@ -673,7 +755,7 @@ export default function SDKTestStandalone() {
             scenarioId={scenarioId}
             rootAgent={activeAgent.name}
             containerClassName="h-[720px]"
-            refreshKey={activeAgentId}
+            refreshKey={graphRefreshKey}
           />
 
           <HandoffSuggestionsPanel

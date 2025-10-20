@@ -474,6 +474,25 @@ def build_agent_network_for_runtime(scenario_id: str, session_id: str | None = N
                     try:
                         sid = session_id or ""
                         seq = store.next_seq(sid) if sid else 0
+                        # Try to extract recommended prompts if present in SDK handoff input
+                        rec_prompts = None
+                        try:
+                            # Common attribute names to probe
+                            for k in (
+                                "recommended_prompts",
+                                "recommendations",
+                                "suggested_prompts",
+                            ):
+                                v = (
+                                    getattr(input, k, None)
+                                    if input is not None
+                                    else None
+                                )
+                                if v:
+                                    rec_prompts = v
+                                    break
+                        except Exception:
+                            rec_prompts = None
                         store.append_event(
                             sid,
                             Event(
@@ -490,6 +509,15 @@ def build_agent_network_for_runtime(scenario_id: str, session_id: str | None = N
                                     if input is not None
                                     else "llm_handoff"
                                 ),
+                                data={
+                                    "from_agent": ad.name,
+                                    "to_agent": target,
+                                    **(
+                                        {"recommended_prompts": rec_prompts}
+                                        if rec_prompts
+                                        else {}
+                                    ),
+                                },
                                 timestamp_ms=int(time.time() * 1000),
                             ),
                         )
@@ -516,7 +544,7 @@ def build_agent_network_for_runtime(scenario_id: str, session_id: str | None = N
                 model_settings=getattr(base, "model_settings", None),
             )
 
-    # Agents-as-tools for orchestrator
+    # Agents-as-tools for orchestrator (supervisor preferred) and also mirror to default_root
     try:
         orchestrator_name = sc.default_root
         sup = next(
@@ -576,6 +604,51 @@ def build_agent_network_for_runtime(scenario_id: str, session_id: str | None = N
                     instructions=base.instructions,
                     model=base.model,
                     tools=list(base.tools or []) + extra_tools,
+                    handoffs=getattr(base, "handoffs", None),
+                    model_settings=getattr(base, "model_settings", None),
+                )
+
+        # Mirror agents-as-tools to the scenario default_root as well so the initial active agent
+        # can perform subroutine calls (e.g., summarizer) without switching to supervisor.
+        if sc.default_root and sc.default_root in name_to_agent:
+            root_name = sc.default_root
+            base = name_to_agent[root_name]
+            extra_tools2 = []
+            for ad in sc.agents:
+                if ad.name == root_name:
+                    continue
+                tgt = name_to_agent.get(ad.name)
+                if not tgt:
+                    continue
+
+                def _is_enabled_root(ctx: Any | None = None, agent_name: str = ad.name):
+                    try:
+                        roles = set(((ctx or {}).get("roles") or []))
+                        allow = AGENT_TOOL_ROLE_ALLOWLIST.get(agent_name)
+                        if isinstance(allow, list) and allow:
+                            return bool(roles.intersection(set(allow)))
+                        if not roles:
+                            return True
+                        return agent_name in roles or "agents" in roles
+                    except Exception:
+                        return True
+
+                try:
+                    extra_tools2.append(
+                        tgt.as_tool(
+                            tool_name=f"{ad.name}_agent_tool",
+                            tool_description=f"Call the {ad.name} agent for a subtask and return the result.",
+                            is_enabled=_is_enabled_root,
+                        )
+                    )
+                except Exception:
+                    pass
+            if extra_tools2:
+                name_to_agent[root_name] = Agent(
+                    name=getattr(base, "name", root_name),
+                    instructions=getattr(base, "instructions", None),
+                    model=getattr(base, "model", None),
+                    tools=list(getattr(base, "tools", []) or []) + extra_tools2,
                     handoffs=getattr(base, "handoffs", None),
                     model_settings=getattr(base, "model_settings", None),
                 )
@@ -826,10 +899,29 @@ async def run_agent_turn(
         result = _Empty()
     # Emit tool_call/tool_result events opportunistically
     try:
+        last_tool_name: Any = None
         for i in getattr(result, "new_items", []) or []:
             # Tool call
-            tname = getattr(i, "tool_name", None) or getattr(i, "name", None)
+            def _extract_name(item: Any) -> Any:
+                try:
+                    v = getattr(item, "tool_name", None) or getattr(item, "name", None)
+                    if v:
+                        return v
+                    if isinstance(item, dict):
+                        call = item.get("call") or {}
+                        return (
+                            item.get("tool_name")
+                            or item.get("tool")
+                            or item.get("name")
+                            or (call.get("name") if isinstance(call, dict) else None)
+                        )
+                except Exception:
+                    return None
+                return None
+
+            tname = _extract_name(i)
             if tname:
+                last_tool_name = tname
                 seq = store.next_seq(session_id)
                 ev = Event(
                     session_id=session_id,
@@ -846,18 +938,41 @@ async def run_agent_turn(
                         or getattr(i, "tool_arguments", None),
                     },
                     timestamp_ms=int(time.time() * 1000),
+                    # Duplicate for easier FE resolution
+                    tool=tname,  # type: ignore[arg-type]
+                    tool_name=tname,  # type: ignore[arg-type]
                 )
                 store.append_event(session_id, ev)
             # Tool result (best-effort)
             tout = getattr(i, "tool_output", None) or getattr(i, "output", None)
             if tout is not None:
                 seq = store.next_seq(session_id)
-                res_tool = (
-                    getattr(i, "tool_name", None) or getattr(i, "name", None) or tname
-                )
+                res_tool = _extract_name(i) or tname or last_tool_name
                 # Optional specialized shaping for agent-as-tool outputs, especially summarizer
                 text_out = None
                 extra: Dict[str, Any] = {}
+                recommended_prompts: list[str] | None = None
+                # First, check if the output already matches our ToolEnvelope contract
+                try:
+                    if isinstance(tout, dict) and (
+                        "ok" in tout and "name" in tout and ("data" in tout or "args" in tout)
+                    ):
+                        # Use envelope fields directly
+                        res_tool = tout.get("name") or res_tool
+                        recommended_prompts = tout.get("recommended_prompts") or None
+                        # Prefer a concise textual summary from data if present
+                        data_field = tout.get("data")
+                        if isinstance(data_field, dict) and data_field.get("summary"):
+                            text_out = str(data_field.get("summary"))
+                        elif isinstance(data_field, dict) and data_field.get("message"):
+                            text_out = str(data_field.get("message"))
+                        else:
+                            # fallback later to str(tout)
+                            pass
+                        # Ensure extra captures raw envelope
+                        extra["envelope"] = tout
+                except Exception:
+                    recommended_prompts = None
                 try:
                     # Summarizer agent-as-tool uses tool name like "summarizer_agent_tool"
                     if isinstance(res_tool, str) and res_tool.lower().startswith(
@@ -906,16 +1021,26 @@ async def run_agent_turn(
                             s = raw if isinstance(raw, str) else str(raw)
                             # Keep it concise
                             text_out = s.strip()
-                    # Default path for other tools
+                    # Default path for other tools (or if envelope didn't supply concise text)
                     if text_out is None:
                         text_out = str(tout)
                 except Exception:
                     text_out = str(tout)
                 # Cap very long outputs for UI safety; raw is preserved in extra if parsed
                 safe_text = (text_out or "")[:4000]
+                # Attach structured/raw output for Tool Outputs panel
                 data_payload = {"tool": res_tool, "tool_name": res_tool}
+                # Preserve raw output for JSON view
+                try:
+                    data_payload["output"] = tout
+                except Exception:
+                    pass
+                if isinstance(tout, (dict, list)):
+                    data_payload.setdefault("raw", tout)
                 if extra:
                     data_payload["extra"] = extra
+                if recommended_prompts:
+                    data_payload["recommended_prompts"] = recommended_prompts
                 evr = Event(
                     session_id=session_id,
                     seq=seq,
@@ -926,6 +1051,9 @@ async def run_agent_turn(
                     final=True,
                     data=data_payload,
                     timestamp_ms=int(time.time() * 1000),
+                    # Duplicate for easier FE resolution
+                    tool=res_tool,  # type: ignore[arg-type]
+                    tool_name=res_tool,  # type: ignore[arg-type]
                 )
                 store.append_event(session_id, evr)
     except Exception:

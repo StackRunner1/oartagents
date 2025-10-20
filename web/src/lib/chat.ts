@@ -159,13 +159,24 @@ export function buildChatMessages(
           kind: 'system',
           source,
         });
-      } else if (ev.type === 'handoff_suggestion') {
+      } else if (ev.type === 'handoff_override') {
         msgs.push({
-          id: `handoff_suggestion:${ev.seq}`,
+          id: `handoff_override:${ev.seq}`,
           role: 'system',
-          text: `Handoff suggested → ${ev.agent_id}${
-            ev.reason ? ` – ${ev.reason}` : ''
-          }`,
+          text: ev.text || `Override → ${ev?.data?.to_agent || ev.agent_id}`,
+          raw: ev,
+          kind: 'system',
+          source,
+        });
+      } else if (
+        ev.type === 'log' &&
+        typeof ev.text === 'string' &&
+        ev.text.startsWith('Tool used [')
+      ) {
+        msgs.push({
+          id: `tool_used:${ev.seq}`,
+          role: 'system',
+          text: ev.text,
           raw: ev,
           kind: 'system',
           source,

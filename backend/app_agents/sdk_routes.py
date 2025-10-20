@@ -179,10 +179,26 @@ async def sdk_session_message(req: SDKSessionMessageRequest):
                     "tool_calls": [],
                     "events": [prior.model_dump()],
                 }
-        if not store.get_session(req.session_id):
+        # Establish or retrieve the session; prefer scenario default_root when available
+        sess = store.get_session(req.session_id)
+        if not sess:
+            try:
+                from .registry import get_scenario
+
+                sc = get_scenario(req.scenario_id) if req.scenario_id else None
+                default_root = (
+                    sc.default_root
+                    if sc and getattr(sc, "default_root", None)
+                    else None
+                )
+            except Exception:
+                default_root = None
             store.create_session(
-                req.session_id, active_agent_id=agent_spec.get("name", "assistant")
+                req.session_id,
+                active_agent_id=(default_root or agent_spec.get("name", "assistant")),
+                scenario_id=req.scenario_id,
             )
+            sess = store.get_session(req.session_id)
 
         now_ms = int(time.time() * 1000)
         user_seq = store.next_seq(req.session_id)
@@ -199,6 +215,7 @@ async def sdk_session_message(req: SDKSessionMessageRequest):
         )
         store.append_event(req.session_id, user_event)
 
+        # Begin turn
         try:
             seq0 = store.next_seq(req.session_id)
             store.append_event(
@@ -208,7 +225,7 @@ async def sdk_session_message(req: SDKSessionMessageRequest):
                     seq=seq0,
                     type="log",
                     role="system",
-                    agent_id=agent_spec.get("name", "Assistant"),
+                    agent_id=(sess.active_agent_id if sess else None),
                     text="turn_start",
                     final=True,
                     timestamp_ms=int(time.time() * 1000),
@@ -217,47 +234,257 @@ async def sdk_session_message(req: SDKSessionMessageRequest):
         except Exception:
             pass
 
-        async def _sdk_path():
-            return await sdk_manager.run_agent_turn(
-                session_id=req.session_id,
-                user_input=req.user_input,
-                agent_spec=agent_spec,
-                scenario_id=req.scenario_id,
-            )
-
+        # Server-side routing: start from session.active_agent and auto-apply LLM handoffs
+        # Determine chaining policy: prefer FE-provided session context; fallback to built-in safe defaults
+        MAX_HOPS = 3
+        auto_chain = True
         try:
-            result = await asyncio.wait_for(_sdk_path(), timeout=15.0)
-        except asyncio.TimeoutError:
+            ctx = store.get_context(req.session_id)
+            routing = (ctx or {}).get("routing", {}) if isinstance(ctx, dict) else {}
+            if isinstance(routing.get("auto_chain", None), bool):
+                auto_chain = bool(routing.get("auto_chain"))
+            else:
+                auto_chain = True  # built-in default
             try:
-                seqt = store.next_seq(req.session_id)
-                store.append_event(
-                    req.session_id,
-                    Event(
-                        session_id=req.session_id,
-                        seq=seqt,
-                        type="log",
-                        role="system",
-                        agent_id=agent_spec.get("name", "Assistant"),
-                        text="turn_timeout",
-                        final=True,
-                        timestamp_ms=int(time.time() * 1000),
-                    ),
-                )
+                mh = routing.get("max_hops", None)
+                MAX_HOPS = int(mh) if mh is not None else 3
+                if MAX_HOPS < 1:
+                    MAX_HOPS = 1
+            except Exception:
+                MAX_HOPS = 3
+        except Exception:
+            auto_chain = True
+            MAX_HOPS = 3
+
+        def _emit_tool_used_from_result(res: dict, agent_id: str | None):
+            try:
+                # sdk_manager already emits tool_call/tool_result. Add a concise tool_used chat line.
+                for ev in store.list_events(req.session_id)[-10:]:
+                    if (
+                        ev.type == "tool_result"
+                        and ev.agent_id == agent_id
+                        and ev.tool_name
+                    ):
+                        sequ = store.next_seq(req.session_id)
+                        store.append_event(
+                            req.session_id,
+                            Event(
+                                session_id=req.session_id,
+                                seq=sequ,
+                                type="log",
+                                role="system",
+                                agent_id=agent_id,
+                                text=f"Tool used [{ev.tool_name}]",
+                                final=True,
+                                timestamp_ms=int(time.time() * 1000),
+                            ),
+                        )
             except Exception:
                 pass
-            result = {
-                "final_output": "",
-                "new_items_len": 0,
-                "tool_calls": [],
-                "used_tools": [],
-                "usage": None,
-                "used_fallback": False,
-            }
 
-        # No Responses fallback; if empty, we still append assistant event for visibility.
+        # Active agent selection from session
+        cur_agent = (
+            sess.active_agent_id if sess else agent_spec.get("name", "assistant")
+        ) or agent_spec.get("name", "assistant")
+        visited: set[str] = set()
+        final_result: dict | None = None
+        hops = 0
 
+        while True:
+            # Prevent trivial loops
+            if cur_agent in visited:
+                break
+            visited.add(cur_agent)
+
+            # Run the turn for the current agent
+            turn_spec = {**agent_spec, "name": cur_agent}
+            # Record the last sequence before the run to scope event inspection to this hop
+            try:
+                evs_pre = store.list_events(req.session_id)
+                last_seq_before = evs_pre[-1].seq if evs_pre else 0
+            except Exception:
+                last_seq_before = 0
+
+            async def _sdk_path():
+                return await sdk_manager.run_agent_turn(
+                    session_id=req.session_id,
+                    user_input=req.user_input,
+                    agent_spec=turn_spec,
+                    scenario_id=req.scenario_id,
+                )
+
+            try:
+                result = await asyncio.wait_for(_sdk_path(), timeout=20.0)
+            except asyncio.TimeoutError:
+                try:
+                    seqt = store.next_seq(req.session_id)
+                    store.append_event(
+                        req.session_id,
+                        Event(
+                            session_id=req.session_id,
+                            seq=seqt,
+                            type="log",
+                            role="system",
+                            agent_id=cur_agent,
+                            text="turn_timeout",
+                            final=True,
+                            timestamp_ms=int(time.time() * 1000),
+                        ),
+                    )
+                except Exception:
+                    pass
+                result = {
+                    "final_output": "",
+                    "new_items_len": 0,
+                    "tool_calls": [],
+                    "used_tools": [],
+                    "usage": None,
+                    "used_fallback": False,
+                }
+
+            # Optionally emit concise tool_used
+            _emit_tool_used_from_result(result, cur_agent)
+
+            # Look for the most recent handoff_suggestion emitted during this hop
+            suggestion_target: str | None = None
+            try:
+                # Inspect only events emitted during this hop
+                recent = store.list_events(req.session_id, since_seq=last_seq_before)
+                for ev in reversed(recent):
+                    if ev.type == "handoff_suggestion":
+                        # Use data.agent_from if available; fallback to current
+                        data = getattr(ev, "data", None) or {}
+                        target = data.get("to_agent") or ev.agent_id
+                        if target and isinstance(target, str):
+                            suggestion_target = target
+                            break
+            except Exception:
+                suggestion_target = None
+
+            # If a handoff was suggested during this hop, apply it now so chips/graph reflect reality
+            if suggestion_target and suggestion_target != cur_agent:
+                # Auto-apply handoff and continue
+                try:
+                    prev = cur_agent
+                    store.set_active_agent(req.session_id, suggestion_target)
+                    cur_agent = suggestion_target
+                    seqh = store.next_seq(req.session_id)
+                    store.append_event(
+                        req.session_id,
+                        Event(
+                            session_id=req.session_id,
+                            seq=seqh,
+                            type="handoff",
+                            role="system",
+                            agent_id=suggestion_target,
+                            text=f"Handoff {prev} -> {suggestion_target}",
+                            final=True,
+                            reason="llm_auto_apply",
+                            timestamp_ms=int(time.time() * 1000),
+                            data={"from_agent": prev, "to_agent": suggestion_target},
+                        ),
+                    )
+                except Exception:
+                    # If we fail to handoff, break to avoid infinite loop
+                    final_result = result
+                    break
+
+                # If we already have an assistant output, we can finish now; otherwise, optionally chain
+                if (result.get("final_output") or "").strip():
+                    final_result = result
+                    break
+                # If auto chaining is off, stop after applying the handoff
+                if not auto_chain:
+                    final_result = result
+                    break
+                hops += 1
+                if hops >= MAX_HOPS:
+                    final_result = result
+                    break
+                # Continue loop to run the new agent
+                continue
+
+            # No suggestion: decide based on assistant output
+            if (result.get("final_output") or "").strip():
+                final_result = result
+                break
+            # No output and no suggestion => stop
+            final_result = result
+            break
+
+        # If no final result yet, build an empty result skeleton
+        result = final_result or {
+            "final_output": "",
+            "new_items_len": 0,
+            "tool_calls": [],
+            "used_tools": [],
+            "usage": None,
+            "used_fallback": False,
+        }
+
+        # Summarizer fallback: if we still have no assistant text, try a summarizer agent
         if not (result.get("final_output") or "").strip():
             try:
+                from .registry import get_scenario
+
+                sc = get_scenario(req.scenario_id) if req.scenario_id else None
+                has_summarizer = bool(
+                    sc and any(a.name.lower() == "summarizer" for a in sc.agents)
+                )
+            except Exception:
+                has_summarizer = False
+            if has_summarizer:
+                # Emit a fallback log event
+                try:
+                    seqfb = store.next_seq(req.session_id)
+                    store.append_event(
+                        req.session_id,
+                        Event(
+                            session_id=req.session_id,
+                            seq=seqfb,
+                            type="log",
+                            role="system",
+                            agent_id="summarizer",
+                            text="fallback:summarizer",
+                            final=True,
+                            timestamp_ms=int(time.time() * 1000),
+                        ),
+                    )
+                except Exception:
+                    pass
+                # Run a single summarizer turn to generate a concise reply
+                try:
+                    summ_spec = {"name": "summarizer", "model": "gpt-4.1-mini"}
+                    prompt = (
+                        "Provide a brief, helpful reply or summary for the user's last message.\n\n"
+                        + req.user_input
+                    )
+                    summ_res = await sdk_manager.run_agent_turn(
+                        session_id=req.session_id,
+                        user_input=prompt,
+                        agent_spec=summ_spec,
+                        scenario_id=req.scenario_id,
+                    )
+                    if (summ_res.get("final_output") or "").strip():
+                        result = {**result, **summ_res, "used_fallback": True}
+                except Exception:
+                    # If summarizer fails, keep empty result; assistant event will show empty text (still appended)
+                    pass
+
+        # Ensure never-unanswered: if still no assistant text, synthesize a short, safe default
+        if not (result.get("final_output") or "").strip():
+            try:
+                import os as _os
+
+                default_reply = _os.environ.get(
+                    "AGENTS_DEFAULT_REPLY",
+                    "I couldn't generate a full response this turn, but I did receive your message.",
+                )
+                result = {
+                    **result,
+                    "final_output": default_reply,
+                    "used_fallback": True,
+                }
                 seqnt = store.next_seq(req.session_id)
                 store.append_event(
                     req.session_id,
@@ -267,7 +494,7 @@ async def sdk_session_message(req: SDKSessionMessageRequest):
                         type="log",
                         role="system",
                         agent_id=agent_spec.get("name", "Assistant"),
-                        text="assistant_no_text",
+                        text="assistant_default_reply",
                         final=True,
                         timestamp_ms=int(time.time() * 1000),
                     ),
@@ -277,13 +504,23 @@ async def sdk_session_message(req: SDKSessionMessageRequest):
 
         message_id = req.client_message_id or str(uuid4())
         seq = store.next_seq(req.session_id)
+        # Resolve the latest active agent for the assistant event (post-handoff)
+        try:
+            _sess_cur = store.get_session(req.session_id)
+            _agent_for_event = (
+                getattr(_sess_cur, "active_agent_id", None)
+                or locals().get("cur_agent")
+                or agent_spec.get("name", "Assistant")
+            )
+        except Exception:
+            _agent_for_event = agent_spec.get("name", "Assistant")
         asst_event = Event(
             session_id=req.session_id,
             seq=seq,
             type="message",
             message_id=message_id,
             role="assistant",
-            agent_id=agent_spec.get("name", "Assistant"),
+            agent_id=_agent_for_event,
             text=result.get("final_output") or "",
             final=True,
             timestamp_ms=int(time.time() * 1000),
@@ -303,7 +540,11 @@ async def sdk_session_message(req: SDKSessionMessageRequest):
                     seq=seq1,
                     type="log",
                     role="system",
-                    agent_id=agent_spec.get("name", "Assistant"),
+                    agent_id=(
+                        sess.active_agent_id
+                        if sess
+                        else agent_spec.get("name", "Assistant")
+                    ),
                     text="turn_end",
                     final=True,
                     timestamp_ms=int(time.time() * 1000),
@@ -366,18 +607,26 @@ class SetActiveAgentRequest(BaseModel):
 @router.post("/sdk/session/set_active_agent")
 async def set_active_agent(req: SetActiveAgentRequest):
     try:
+        # Determine previous agent for text clarity
+        prev = None
+        try:
+            sess = store.get_session(req.session_id)
+            prev = getattr(sess, "active_agent_id", None)
+        except Exception:
+            prev = None
         store.set_active_agent(req.session_id, req.agent_name)
         seq = store.next_seq(req.session_id)
         ev = Event(
             session_id=req.session_id,
             seq=seq,
-            type="handoff",
+            type="handoff_override",
             role="system",
             agent_id=req.agent_name,
-            text=None,
+            text=f"Override: {prev or ''} -> {req.agent_name} (user)",
             final=True,
-            reason="manual_switch",
+            reason="user_apply",
             timestamp_ms=int(time.time() * 1000),
+            data={"from_agent": prev, "to_agent": req.agent_name},
         )
         store.append_event(req.session_id, ev)
         return {"ok": True}
