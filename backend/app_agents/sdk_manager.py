@@ -951,6 +951,28 @@ async def run_agent_turn(
                 # Optional specialized shaping for agent-as-tool outputs, especially summarizer
                 text_out = None
                 extra: Dict[str, Any] = {}
+                recommended_prompts: list[str] | None = None
+                # First, check if the output already matches our ToolEnvelope contract
+                try:
+                    if isinstance(tout, dict) and (
+                        "ok" in tout and "name" in tout and ("data" in tout or "args" in tout)
+                    ):
+                        # Use envelope fields directly
+                        res_tool = tout.get("name") or res_tool
+                        recommended_prompts = tout.get("recommended_prompts") or None
+                        # Prefer a concise textual summary from data if present
+                        data_field = tout.get("data")
+                        if isinstance(data_field, dict) and data_field.get("summary"):
+                            text_out = str(data_field.get("summary"))
+                        elif isinstance(data_field, dict) and data_field.get("message"):
+                            text_out = str(data_field.get("message"))
+                        else:
+                            # fallback later to str(tout)
+                            pass
+                        # Ensure extra captures raw envelope
+                        extra["envelope"] = tout
+                except Exception:
+                    recommended_prompts = None
                 try:
                     # Summarizer agent-as-tool uses tool name like "summarizer_agent_tool"
                     if isinstance(res_tool, str) and res_tool.lower().startswith(
@@ -999,7 +1021,7 @@ async def run_agent_turn(
                             s = raw if isinstance(raw, str) else str(raw)
                             # Keep it concise
                             text_out = s.strip()
-                    # Default path for other tools
+                    # Default path for other tools (or if envelope didn't supply concise text)
                     if text_out is None:
                         text_out = str(tout)
                 except Exception:
@@ -1017,6 +1039,8 @@ async def run_agent_turn(
                     data_payload.setdefault("raw", tout)
                 if extra:
                     data_payload["extra"] = extra
+                if recommended_prompts:
+                    data_payload["recommended_prompts"] = recommended_prompts
                 evr = Event(
                     session_id=session_id,
                     seq=seq,

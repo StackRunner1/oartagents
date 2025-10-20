@@ -16,13 +16,39 @@ except Exception:  # pragma: no cover - fallback typing if SDK unavailable
 # Placeholder tool registry. In future, implement real functions (DB lookups, etc.).
 
 
+class ToolEnvelope(BaseModel):
+    """Standard envelope for tool outputs to ensure reliable event shaping.
+
+    Fields:
+    - ok: success indicator
+    - name: canonical tool name
+    - args: the arguments used for execution
+    - data: primary tool data payload (dict/list/primitive)
+    - meta: optional metadata (timings, source, etc.)
+    - recommended_prompts: optional list of next-step suggestions
+    """
+
+    ok: bool = True
+    name: str
+    args: Dict[str, Any] | None = None
+    data: Any | None = None
+    meta: Dict[str, Any] | None = None
+    recommended_prompts: List[str] | None = None
+
+
+def wrap_envelope(name: str, args: Dict[str, Any] | None, data: Any, **kw) -> Dict[str, Any]:
+    """Create a ToolEnvelope as a plain dict to avoid coupling callers to pydantic types."""
+    env = ToolEnvelope(name=name, args=args or {}, data=data, **kw)
+    return env.model_dump()
+
+
 class ToolSpec(BaseModel):
     name: str
     description: str = ""
     func: Callable[..., Any]
     params_schema: Dict[str, Any] = Field(default_factory=dict)
-    # Prefer SDK to infer schema from signature (needed for ctx-aware tools)
-    infer_schema: bool = True
+    # Prefer explicit schema; set to False to avoid inferring ctx parameter
+    infer_schema: bool = False
     # Optional roles gating (if non-empty, only sessions with one of these roles see the tool)
     roles_allowed: List[str] = Field(default_factory=list)
 
@@ -32,14 +58,28 @@ tool_registry: Dict[str, ToolSpec] = {}
 
 def _echo_context(ctx: RunContextWrapper[Any], text: str = ""):
     """Simple tool: echoes a provided text for debugging / grounding."""
-    # Example of reading session context fields
     meta = getattr(ctx, "context", {}) if ctx else {}
-    return {"echo": {"text": text, "ctx_keys": sorted(list(meta.keys()))}}
+    data = {"text": text, "ctx_keys": sorted(list(meta.keys()))}
+    return wrap_envelope(
+        name="echo_context",
+        args={"text": text},
+        data=data,
+        recommended_prompts=[
+            "Show my session context keys",
+            "Echo back the last user message",
+        ],
+    )
 
 
 def _weather(ctx: RunContextWrapper[Any], city: str) -> Dict[str, Any]:
     """Return simple faux weather for a city (demo)."""
-    return {"city": city, "forecast": "sunny", "temp_c": 23}
+    data = {"city": city, "forecast": "sunny", "temp_c": 23}
+    return wrap_envelope(
+        name="weather",
+        args={"city": city},
+        data=data,
+        recommended_prompts=[f"Do you want a 5-day forecast for {city}?"],
+    )
 
 
 def _product_search(
@@ -51,7 +91,16 @@ def _product_search(
         {"id": "sku-2", "name": "Widget Mini", "price": 19.99},
         {"id": "sku-3", "name": "Widget Max", "price": 89.99},
     ]
-    return {"query": query, "results": items[: max(1, min(limit, len(items)))]}
+    results = items[: max(1, min(limit, len(items)))]
+    return wrap_envelope(
+        name="product_search",
+        args={"query": query, "limit": limit},
+        data={"query": query, "results": results},
+        recommended_prompts=[
+            "Filter results by price under $50",
+            "Show only accessories",
+        ],
+    )
 
 
 # Register initial tools
@@ -59,8 +108,13 @@ tool_registry["echo_context"] = ToolSpec(
     name="echo_context",
     description="Echo input args for debugging/grounding",
     func=_echo_context,
-    params_schema={"type": "object", "properties": {"text": {"type": "string"}}},
-    infer_schema=True,
+    params_schema={
+        "type": "object",
+        "properties": {"text": {"type": "string", "description": "Text to echo back"}},
+        "required": [],
+        "additionalProperties": False,
+    },
+    infer_schema=False,
 )
 tool_registry["weather"] = ToolSpec(
     name="weather",
@@ -68,10 +122,11 @@ tool_registry["weather"] = ToolSpec(
     func=_weather,
     params_schema={
         "type": "object",
-        "properties": {"city": {"type": "string"}},
+        "properties": {"city": {"type": "string", "description": "City name"}},
         "required": ["city"],
+        "additionalProperties": False,
     },
-    infer_schema=True,
+    infer_schema=False,
     roles_allowed=["support", "assistant"],
 )
 tool_registry["product_search"] = ToolSpec(
@@ -81,12 +136,13 @@ tool_registry["product_search"] = ToolSpec(
     params_schema={
         "type": "object",
         "properties": {
-            "query": {"type": "string"},
-            "limit": {"type": "integer", "minimum": 1, "maximum": 20},
+            "query": {"type": "string", "description": "Search query"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 20, "default": 3},
         },
         "required": ["query"],
+        "additionalProperties": False,
     },
-    infer_schema=True,
+    infer_schema=False,
     roles_allowed=["sales"],
 )
 
