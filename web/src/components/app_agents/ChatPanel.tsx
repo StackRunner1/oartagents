@@ -24,6 +24,7 @@ export interface ChatPanelProps {
     reason: string;
     at: string;
   }[];
+  onApplySuggestion?: (targetAgent: string) => void;
 }
 
 export const ChatPanel: React.FC<ChatPanelProps> = ({
@@ -38,6 +39,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   onSend,
   onToolAction,
   handoffEvents = [],
+  onApplySuggestion,
 }) => {
   const chatMessages: ChatMessage[] = useMemo(() => {
     return buildChatMessages(events, transcript, realtimeLogs, {
@@ -61,11 +63,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
           {streaming && (
             <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-700/30 border border-amber-600 text-amber-200 uppercase tracking-wide">
               Streaming
-            </span>
-          )}
-          {handoffEvents.length > 0 && (
-            <span className="text-[10px] px-2 py-0.5 rounded-full bg-indigo-700/30 border border-indigo-600 text-indigo-200 uppercase tracking-wide">
-              Handoff: {handoffEvents[handoffEvents.length - 1].to}
             </span>
           )}
         </div>
@@ -121,25 +118,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             </div>
           );
         })}
-        {handoffEvents.map((h) => (
-          <div key={h.id} className="flex justify-start">
-            <div className="max-w-[75%] rounded-md px-3 py-2 text-xs bg-indigo-900/30 text-indigo-100 border border-indigo-800/70">
-              <span className="inline-block align-middle text-[9px] font-medium tracking-wide mr-2 px-1.5 py-0.5 rounded bg-indigo-800/50 border border-indigo-700/70">
-                Handoff
-              </span>
-              <span className="font-semibold">{h.from}</span> →{' '}
-              <span className="font-semibold">{h.to}</span>
-              {h.reason ? (
-                <span className="opacity-80"> — {h.reason}</span>
-              ) : null}
-              {h.at ? (
-                <span className="ml-2 opacity-60">
-                  [{new Date(h.at).toLocaleTimeString()}]
-                </span>
-              ) : null}
-            </div>
-          </div>
-        ))}
+        {/* In-chat handoff strip removed to avoid duplication with system messages and right panel */}
         {loading && (
           <div className="flex justify-start">
             <div className="max-w-[60%] rounded-md px-3 py-2 text-sm bg-gray-800/70 text-gray-300 italic">
@@ -165,7 +144,25 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
           <div className="text-[11px] text-gray-500">
             {loading ? 'Sending…' : 'Idle'}
           </div>
-          <div className="flex gap-2">
+          <div className="flex items-center gap-2">
+            {handoffEvents.length > 0 && (
+              <div className="flex items-center gap-1 text-[11px]">
+                <span className="px-2 py-0.5 rounded bg-indigo-700/30 border border-indigo-600 text-indigo-200">
+                  Suggested → {handoffEvents[handoffEvents.length - 1].to}
+                </span>
+                {onApplySuggestion && (
+                  <button
+                    onClick={() =>
+                      onApplySuggestion(
+                        handoffEvents[handoffEvents.length - 1].to
+                      )
+                    }
+                    className="text-[11px] px-2 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white">
+                    Apply
+                  </button>
+                )}
+              </div>
+            )}
             <button
               onClick={() => setInput('')}
               className="text-[11px] px-2 py-1 rounded border border-gray-700 hover:bg-gray-800 text-gray-300">

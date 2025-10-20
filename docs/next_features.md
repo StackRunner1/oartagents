@@ -1,14 +1,14 @@
-# what we target next (in order of priority):
+# What we target next (in order of priority)
 
 ### Legend Key for task lists
 
 [x] = complete [~] = in progress [ ] = pending , not started
 
-## Primary Features to implement next
+## Primary features to implement next
 
 - [x] Assistant message rendering: tighten fallback paths and formatting
-- [~] Handoff/agent indicators: show root-change suggestions, highlight active
-  agent, and surface allowed tools
+- [x] Handoff/agent indicators: show root-change suggestions, highlight active
+      agent, and surface allowed tools (inline chip + right-column panel)
 - [x] Improve multi-agent orchestration (LLM-only native handoffs per official
       docs)
 - [x] Tool call visibility: clearer grouping, collapsible details
@@ -22,6 +22,17 @@
   events
 - [ ] Transcript refresh: explicit sync button and smarter auto-refresh
 - [ ] Retry/send state: disable send during in-flight, show retry on error
+
+## Prioritized next steps (shortlist)
+
+1. Agents-as-tools end-to-end example (e.g., Summarizer/Translator) with
+   `custom_output_extractor` and a compact Tool Output action.
+2. Tool discovery: add `GET /api/tools/search?query=` and optional discovery
+   tool; small UI finder/typeahead.
+3. Scenarios → agent groups shim: keep `scenario_id` in APIs; internally map to
+   `agent_group_id`.
+4. 100% tool-name reliability in Chat and Tool Outputs; unify resolver pipeline
+   without changing backend event semantics.
 
 ## Implementation Task Checklist: Assistant message rendering: tighten fallback paths and formatting
 
@@ -40,7 +51,7 @@
       `from → to — reason`
 - [x] Wire handoff events state from sdkTest to ChatPanel
 - [ ] Sort-merge handoff messages chronologically into chat stream (by `at`) —
-      currently shown in a dedicated section
+      currently also listed in the right-column Handoff Suggestions panel
 - [x] Action buttons to Apply/Dismiss (Apply switches agent immediately)
 
 ## New platform-aligned tasks (from main app context)
@@ -199,7 +210,8 @@ Acceptance criteria
 
 - [x] Tool Calls are clearer and separated from the actions list
 - [x] Handoff actions work and update active agent immediately
-- [~] In-chat tool cards show tool names when available (still missing name in some cases)
+- [ ] In-chat tool cards show tool names consistently (currently missing in some
+      cases)
 - [ ] GraphViz includes agents-as-tools (e.g., Summarizer visible from General)
 
 ### Phased implementation plan
@@ -228,7 +240,7 @@ Phase 3
 - [ ] Introduce code-based orchestration for select flows and combine with
       LLM-only routing
 - [ ] Expand tool library structure with namespaces, metadata, and tests
-- [ ]Harden permissions and rate limits; add guardrails integration per docs
+- [ ] Harden permissions and rate limits; add guardrails integration per docs
 
 ### Detailed task checklist (executable)
 
@@ -274,7 +286,7 @@ UI & UX
 - [x] Handoff Apply/Dismiss buttons in the new "Handoff Suggestions" panel;
       chronological merge still pending
 - [x] Move Agent Graph into a new right column; widen page if needed
-- [x] Place Handoff Actions directly below chat
+- [x] Right-column Handoff Suggestions panel
 
 ### Acceptance criteria (summary)
 
@@ -326,6 +338,21 @@ UI & UX
 Rationale: This path lets us integrate new functionality (catalog, dynamic
 equipping, agents-as-tools) immediately while moving terminology and APIs
 safely, preserving current FE and preparing for export to the main app.
+
+## Pending core features
+
+- Guardrails scaffolding and integration (per official docs)
+- CRUD tools for project object tree with scoped auth
+- Tool discovery endpoint and optional LLM discovery tool
+- Scenarios → agent groups migration (shim + docs)
+- Code-based orchestration (mix with LLM-only)
+- GraphViz: include agents-as-tools in visualization
+- Event stream polish: auto-scroll, timestamps, compact system/tool events
+- Transcript refresh controls and smarter auto-refresh
+- Retry/send state handling
+- Tool library structure with typed param models and strict schemas
+- Permissions and rate limits hardening; tests and types for tool gating and
+  event shapes
 
 ## Next batch of tasks (proposed)
 

@@ -21,7 +21,15 @@ export const ToolOutputCard: React.FC<ToolOutputCardProps> = ({
 }) => {
   // Normalize tool name from various fields
   const resolvedName = useMemo(() => {
-    const rawCandidates = [data?.tool, data?.tool_name, data?.name, toolName];
+    const rawCandidates = [
+      data?.tool,
+      data?.tool_name,
+      data?.name,
+      (data && (data as any).toolName) as any,
+      (data && (data as any).tooltype) as any,
+      (data && (data as any).type) as any,
+      toolName,
+    ];
     const candidates = (rawCandidates.filter(Boolean) as string[]).map((s) =>
       s.toString()
     );
@@ -32,7 +40,11 @@ export const ToolOutputCard: React.FC<ToolOutputCardProps> = ({
   }, [toolName, data]);
   const [expanded, setExpanded] = useState(false);
   const parsed = useMemo(() => {
-    const p = data?.extra?.parsed;
+    // Prefer backend-provided structured fields; fall back to extra.parsed
+    const p =
+      (isObject(data) && (data as any).raw) ||
+      (isObject(data) && (data as any).output) ||
+      data?.extra?.parsed;
     return isObject(p) ? p : undefined;
   }, [data]);
 

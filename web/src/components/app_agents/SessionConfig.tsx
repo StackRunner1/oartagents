@@ -25,6 +25,10 @@ export interface SessionConfigProps {
   error: string | null;
   realtimeConnected: boolean;
   hideAgentControls?: boolean;
+  autoChain?: boolean;
+  setAutoChain?: (v: boolean) => void;
+  maxHops?: number;
+  setMaxHops?: (n: number) => void;
 }
 
 export const SessionConfig: React.FC<SessionConfigProps> = ({
@@ -46,6 +50,10 @@ export const SessionConfig: React.FC<SessionConfigProps> = ({
   error,
   realtimeConnected,
   hideAgentControls = false,
+  autoChain = true,
+  setAutoChain,
+  maxHops = 3,
+  setMaxHops,
 }) => {
   const activeAgent = agents.find((a) => a.id === activeAgentId) || agents[0];
   return (
@@ -61,6 +69,7 @@ export const SessionConfig: React.FC<SessionConfigProps> = ({
           placeholder="(auto)"
         />
       </div>
+      {/* Row 1: Model + Max hops */}
       <div className="grid grid-cols-2 gap-3">
         <div>
           <label className="text-xs uppercase text-gray-400">Model</label>
@@ -71,16 +80,38 @@ export const SessionConfig: React.FC<SessionConfigProps> = ({
           />
         </div>
         <div>
-          <label className="text-xs uppercase text-gray-400 flex items-center justify-between">
-            Auto Refresh
-            <input
-              type="checkbox"
-              checked={autoRefresh}
-              onChange={(e) => setAutoRefresh(e.target.checked)}
-              className="ml-2"
-            />
-          </label>
+          <label className="text-xs uppercase text-gray-400">Max hops</label>
+          <input
+            className="mt-1 w-full rounded bg-gray-800 border border-gray-700 px-2 py-1 text-sm"
+            type="number"
+            min={1}
+            value={maxHops}
+            onChange={(e) =>
+              setMaxHops && setMaxHops(Math.max(1, Number(e.target.value) || 1))
+            }
+          />
         </div>
+      </div>
+      {/* Row 2: Auto Refresh + Auto-chain */}
+      <div className="grid grid-cols-2 gap-3">
+        <label className="text-xs uppercase text-gray-400 flex items-center justify-between">
+          Auto Refresh
+          <input
+            type="checkbox"
+            checked={autoRefresh}
+            onChange={(e) => setAutoRefresh(e.target.checked)}
+            className="ml-2"
+          />
+        </label>
+        <label className="text-xs uppercase text-gray-400 flex items-center justify-between">
+          Auto-chain
+          <input
+            type="checkbox"
+            checked={!!autoChain}
+            onChange={(e) => setAutoChain && setAutoChain(e.target.checked)}
+            className="ml-2"
+          />
+        </label>
       </div>
       {!hideAgentControls && (
         <div className="space-y-2">

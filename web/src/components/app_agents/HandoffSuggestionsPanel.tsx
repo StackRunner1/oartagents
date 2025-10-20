@@ -6,6 +6,7 @@ export interface HandoffSuggestionItem {
   to: string;
   reason: string;
   at: string; // ISO string
+  recommended_prompts?: string[];
 }
 
 export interface HandoffSuggestionsPanelProps {
@@ -35,7 +36,7 @@ export const HandoffSuggestionsPanel: React.FC<
             <li
               key={h.id}
               className="flex items-center justify-between bg-gray-950 border border-gray-800 rounded p-2">
-              <div className="text-[12px] text-indigo-100">
+              <div className="text-[12px] text-indigo-100 flex-1 pr-2">
                 <span className="font-semibold">{h.from}</span> →{' '}
                 <span className="font-semibold">{h.to}</span>
                 {h.reason ? (
@@ -46,6 +47,21 @@ export const HandoffSuggestionsPanel: React.FC<
                     [{new Date(h.at).toLocaleTimeString()}]
                   </span>
                 ) : null}
+                {!!h.recommended_prompts?.length && (
+                  <div className="mt-1 text-[11px] text-indigo-200/90">
+                    Recommended prompts:
+                    <div className="mt-1 flex flex-wrap gap-1.5">
+                      {h.recommended_prompts.map((p, idx) => (
+                        <span
+                          key={idx}
+                          className="px-1.5 py-0.5 rounded border border-indigo-700 bg-indigo-900/40 text-indigo-100"
+                          title={p}>
+                          {p}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
               <div className="flex items-center gap-2">
                 <button

@@ -9,6 +9,7 @@ EventType = Literal[
     "message",
     "handoff",
     "handoff_suggestion",
+    "handoff_override",
     "tool_call",
     "tool_result",
     "token",
