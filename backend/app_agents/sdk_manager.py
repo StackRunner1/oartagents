@@ -73,6 +73,7 @@ def _ensure_builtin_tools_loaded():
 ## Removed provider wrappers (LiteLLM, OpenAI Responses); SDK-only
 import time
 
+from . import mock_data as _mock
 from .core.models.event import Event
 from .core.store.memory_store import store
 from .registry import get_scenario
@@ -89,6 +90,16 @@ AGENT_TOOL_ROLE_ALLOWLIST: Dict[str, list[str]] = {
     # "summarizer": ["agents", "assistant", "supervisor"],
     # "sales": ["supervisor", "general", "agents"],
 }
+
+# Load mock data once when module is imported (idempotent)
+try:
+    import os
+
+    # Data folder is alongside this package: backend/app_agents/data
+    base = os.path.abspath(os.path.join(os.path.dirname(__file__), "data"))
+    _mock.load_all(base)
+except Exception:
+    pass
 
 
 class _MinimalSession:
@@ -955,7 +966,9 @@ async def run_agent_turn(
                 # First, check if the output already matches our ToolEnvelope contract
                 try:
                     if isinstance(tout, dict) and (
-                        "ok" in tout and "name" in tout and ("data" in tout or "args" in tout)
+                        "ok" in tout
+                        and "name" in tout
+                        and ("data" in tout or "args" in tout)
                     ):
                         # Use envelope fields directly
                         res_tool = tout.get("name") or res_tool

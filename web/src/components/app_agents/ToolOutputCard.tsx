@@ -47,6 +47,22 @@ export const ToolOutputCard: React.FC<ToolOutputCardProps> = ({
       data?.extra?.parsed;
     return isObject(p) ? p : undefined;
   }, [data]);
+  const argsObj = useMemo(() => {
+    try {
+      const a = (data && (data as any).args) || undefined;
+      return isObject(a) ? a : undefined;
+    } catch {
+      return undefined;
+    }
+  }, [data]);
+  const recommendedPrompts: string[] = useMemo(() => {
+    try {
+      const rp = (data && (data as any).recommended_prompts) || [];
+      return Array.isArray(rp) ? (rp.filter(Boolean) as string[]) : [];
+    } catch {
+      return [];
+    }
+  }, [data]);
 
   // Derive generic quick actions, reusable in main app
   // Example mapping: summarizer outputs -> Open Summary Panel
@@ -125,6 +141,31 @@ export const ToolOutputCard: React.FC<ToolOutputCardProps> = ({
       <div className="px-3 pb-3 text-sm whitespace-pre-wrap break-words">
         {text || <span className="opacity-60">(no textual output)</span>}
       </div>
+      {argsObj ? (
+        <div className="px-3 pb-2 text-[11px] text-sky-200/90">
+          <div className="mb-1 opacity-80">Args:</div>
+          <pre className="bg-black/30 border border-sky-900 rounded p-2 overflow-auto max-h-40">
+            {JSON.stringify(argsObj, null, 2)}
+          </pre>
+        </div>
+      ) : null}
+      {!!recommendedPrompts.length && (
+        <div className="px-3 pb-3 text-[11px] text-sky-100">
+          <div className="mb-1 opacity-80">Recommended prompts:</div>
+          <div className="flex flex-wrap gap-1.5">
+            {recommendedPrompts.map((p, idx) => (
+              <button
+                key={idx}
+                onClick={() =>
+                  onAction?.({ kind: 'insert_prompt', payload: p })
+                }
+                className="px-1.5 py-0.5 rounded border border-sky-700 bg-sky-900/40 hover:bg-sky-800/40">
+                {p}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
       {expanded && parsed ? (
         <div className="px-3 pb-3 text-[11px]">
           <pre className="bg-black/30 border border-sky-900 rounded p-2 overflow-auto max-h-72">

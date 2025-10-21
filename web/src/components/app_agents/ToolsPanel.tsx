@@ -298,26 +298,7 @@ export const ToolsPanel: React.FC<ToolsPanelProps> = ({
             )}
           </ul>
         )}
-        {/* Agents-as-tools for this agent (read-only, invoked by LLM) */}
-        {catalogOpen && (
-          <div className="mt-2">
-            <div className="text-[11px] text-gray-400 mb-1">Agent Tools</div>
-            {agentTools.length === 0 ? (
-              <div className="text-[11px] text-gray-500">None</div>
-            ) : (
-              <div className="flex flex-wrap gap-1">
-                {agentTools.map((n) => (
-                  <span
-                    key={n}
-                    className="text-[10px] px-2 py-0.5 rounded border border-gray-800 bg-gray-900/60 text-indigo-200"
-                    title="Exposed as a tool to this agent at runtime">
-                    {n}
-                  </span>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
+        {/* Duplicate 'Agent Tools' section removed to avoid redundancy; rely on the top 'Agents-as-Tools' */}
       </div>
       {lastToolStatus && (
         <div

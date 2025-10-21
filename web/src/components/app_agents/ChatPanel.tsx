@@ -88,17 +88,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
               : 'bg-sky-600/30 text-sky-200 border border-sky-500/40';
           return (
             <div key={m.id} className={wrapperClass}>
-              {m.kind === 'tool' ? (
-                <div className="max-w-[75%]">
-                  <ToolOutputCard
-                    toolName={m.toolName || 'tool'}
-                    text={m.text}
-                    data={m.toolData}
-                    onAction={(action) => onToolAction?.(action)}
-                    compact
-                  />
-                </div>
-              ) : (
+              {m.kind === 'tool' ? null : (
                 <div
                   className={`group relative max-w-[75%] rounded-md px-3 py-2 text-sm leading-snug shadow-sm whitespace-pre-wrap break-words ${bubbleClass}`}
                   title={m.role}>

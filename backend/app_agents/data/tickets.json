@@ -1,0 +1,10 @@
+[
+  {
+    "ticket_id": "t-1",
+    "subject": "Login issue",
+    "body": "Cannot login",
+    "tags": ["auth"],
+    "status": "open",
+    "assignee": "agent-1"
+  }
+]

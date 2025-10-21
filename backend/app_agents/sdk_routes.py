@@ -14,9 +14,40 @@ from . import sdk_manager
 ## Removed Responses fallback; SDK-only execution path.
 from .core.models.event import Event
 from .core.store.memory_store import store
+from .tools import tool_registry
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+# ---- SDK: Tool catalog ----
+@router.get("/sdk/tools/catalog")
+async def sdk_tools_catalog(roles: str | None = Query(None)):
+    """Return tool catalog with optional role filtering.
+
+    Query param roles: comma-separated roles; if provided, only tools intersecting these roles are returned.
+    """
+    try:
+        role_set = set([r.strip() for r in (roles or "").split(",") if r.strip()])
+        items = []
+        for name, spec in tool_registry.items():
+            allowed = list(getattr(spec, "roles_allowed", []) or [])
+            if role_set:
+                if allowed and not role_set.intersection(set(allowed)):
+                    continue
+            items.append(
+                {
+                    "name": name,
+                    "description": getattr(spec, "description", "") or "",
+                    "roles_allowed": allowed,
+                    "schema": getattr(spec, "params_schema", {}),
+                    # Example args are optional; FE may construct from schema
+                    "example_args": {},
+                }
+            )
+        return {"ok": True, "tools": items, "count": len(items)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"catalog failed: {e}")
 
 
 # ---- SDK: Session Create/Delete/Message ----
