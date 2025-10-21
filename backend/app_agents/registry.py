@@ -39,7 +39,7 @@ _default_agents: List[AgentDefinition] = [
             "You are a sales assistant. Ask concise clarifying questions; recommend items from the catalog using product_search."
         ),
         voice=None,
-        tools=["product_search"],
+        tools=["product_search", "supabase_select_proxy"],
         handoff_targets=["support", "general"],
     ),
     AgentDefinition(

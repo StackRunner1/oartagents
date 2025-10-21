@@ -111,8 +111,8 @@
   - [x] Acceptance: Chips insert text into the input; args shown under “Show
         details.”
 
-### Phase 5 — Telemetry and usage
-
+### Phase 5 — Telemetry and usage => must use official Agent SDK (OpenAI) TRACING
+Link to official doc: https://openai.github.io/openai-agents-python/tracing/
 - [ ] Tool usage counts per session
   - [ ] Increment counts when tool_call emitted; display in Usage panel summary
         (e.g., “Tools called: 3”).

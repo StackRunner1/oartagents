@@ -631,14 +631,76 @@ tool_registry["supabase_select"] = ToolSpec(
         "type": "object",
         "properties": {
             "table": {"type": "string", "description": "Table name"},
-            "filters": {"type": "object", "additionalProperties": True},
+            # Keep filters flexible but avoid explicit additionalProperties to satisfy viz/Pydantic
+            "filters": {"type": "object"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 25},
+        },
+        "required": ["table"],
+        # Omit additionalProperties at the root level for compatibility in viz path
+    },
+    infer_schema=False,
+    roles_allowed=["assistant", "support", "sales", "planner", "estimator"],
+)
+
+
+# -----------------------
+# Supabase proxy (graph-safe)
+# -----------------------
+
+
+def _supabase_select_proxy(
+    ctx: RunContextWrapper[Any],
+    table: str,
+    filter_key: Optional[str] = None,
+    filter_value: Optional[str] = None,
+    limit: Optional[int] = 25,
+) -> Dict[str, Any]:
+    """Graph-safe proxy for Supabase select with simple key/value filter.
+
+    This avoids nested object schemas by accepting a single filter pair. It delegates to
+    the underlying supabase_select implementation and then adjusts the envelope to
+    reflect the proxy name for UI consistency.
+    """
+    filters: Optional[Dict[str, Any]] = None
+    if filter_key:
+        filters = {filter_key: filter_value}
+    ret = _supabase_select(ctx=ctx, table=table, filters=filters, limit=limit)
+    # Normalize envelope name/args for clarity in UI
+    try:
+        if isinstance(ret, dict):
+            ret["name"] = "supabase_select_proxy"
+            ret["args"] = {
+                "table": table,
+                "filter_key": filter_key,
+                "filter_value": filter_value,
+                "limit": limit,
+            }
+            meta = ret.get("meta") or {}
+            meta["proxy_for"] = "supabase_select"
+            ret["meta"] = meta
+    except Exception:
+        # If anything goes wrong adjusting the envelope, return the original
+        return ret
+    return ret
+
+
+tool_registry["supabase_select_proxy"] = ToolSpec(
+    name="supabase_select_proxy",
+    description="Proxy for Supabase select with a simple key/value filter (graph-safe schema)",
+    func=_supabase_select_proxy,
+    params_schema={
+        "type": "object",
+        "properties": {
+            "table": {"type": "string", "description": "Table name"},
+            "filter_key": {"type": "string", "description": "Column to match"},
+            "filter_value": {"type": "string", "description": "Value to match"},
             "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 25},
         },
         "required": ["table"],
         "additionalProperties": False,
     },
     infer_schema=False,
-    roles_allowed=["assistant", "support", "sales", "planner", "estimator"],
+    roles_allowed=["sales"],
 )
 
 
