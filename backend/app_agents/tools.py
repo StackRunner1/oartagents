@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any, Callable, Dict, List, Optional
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
 
 from . import mock_data
+
+logger = logging.getLogger(__name__)
 
 try:
     from supabase import create_client  # type: ignore
@@ -563,13 +567,37 @@ tool_registry["catalog_facets"] = ToolSpec(
 
 
 def _get_supabase():  # pragma: no cover - simple runtime getter
+    # Accept common env names; prefer explicit server-side service key variants
     url = os.getenv("SUPABASE_URL")
-    key = os.getenv("SUPABASE_ANON_KEY") or os.getenv("SUPABASE_SERVICE_KEY")
+    raw_key = (
+        os.getenv("SUPABASE_SERVICE_KEY")
+        or os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+        or None
+    )
+    # Normalize accidental quotes/whitespace in .env
+    if isinstance(url, str):
+        url = url.strip().strip('"').strip("'")
+    key = None
+    if isinstance(raw_key, str):
+        key = raw_key.strip().strip('"').strip("'")
     if not (url and key and create_client):
+        try:
+            logger.debug(
+                "supabase_get_client_missing url=%s key_present=%s create_client=%s",
+                bool(url),
+                bool(key),
+                bool(create_client),
+            )
+        except Exception:
+            pass
         return None
     try:
         return create_client(url, key)
-    except Exception:
+    except Exception as e:
+        try:
+            logger.debug("supabase_create_client_error: %s", str(e))
+        except Exception:
+            pass
         return None
 
 
@@ -587,10 +615,14 @@ def _supabase_select(
     """
     sb = _get_supabase()
     if not sb:
+        # Provide a slightly more actionable error if client isn't available
         return wrap_envelope(
             name="supabase_select",
             args={"table": table, "filters": filters, "limit": limit},
-            data={"error": "Supabase client not configured"},
+            data={
+                "error": "Supabase client not configured",
+                "hint": "Ensure SUPABASE_URL and SUPABASE_SERVICE_KEY (or SUPABASE_SERVICE_ROLE_KEY) are set in backend/.env and the server was restarted.",
+            },
         )
     q = sb.table(table).select("*")
     f = filters or {}
@@ -609,13 +641,51 @@ def _supabase_select(
             if isinstance(resp, dict)
             else None
         )
+        # Best-effort debug log (no secrets): include host, table, filters, row_count
+        try:
+            host = None
+            url = os.getenv("SUPABASE_URL")
+            if url:
+                host = urlparse(url).netloc
+            logger.debug(
+                "supabase_select ok host=%s table=%s filters=%s limit=%s row_count=%s",
+                host,
+                table,
+                f,
+                lim,
+                len(rows or []),
+            )
+        except Exception:
+            pass
         return wrap_envelope(
             name="supabase_select",
             args={"table": table, "filters": filters, "limit": lim},
             data={"rows": rows or []},
+            meta={
+                "row_count": len(rows or []),
+                "table": table,
+                "filters": f or {},
+                "limit": lim,
+            },
             recommended_prompts=["Filter by another field", "Increase the limit"],
         )
     except Exception as e:
+        # Log error for troubleshooting; avoid leaking secrets
+        try:
+            host = None
+            url = os.getenv("SUPABASE_URL")
+            if url:
+                host = urlparse(url).netloc
+            logger.debug(
+                "supabase_select error host=%s table=%s filters=%s limit=%s err=%s",
+                host,
+                table,
+                filters,
+                limit,
+                str(e),
+            )
+        except Exception:
+            pass
         return wrap_envelope(
             name="supabase_select",
             args={"table": table, "filters": filters, "limit": lim},
@@ -665,22 +735,20 @@ def _supabase_select_proxy(
     if filter_key:
         filters = {filter_key: filter_value}
     ret = _supabase_select(ctx=ctx, table=table, filters=filters, limit=limit)
-    # Normalize envelope name/args for clarity in UI
+    # Keep the underlying envelope (name = supabase_select) for purist alignment.
+    # Optionally annotate meta to indicate the proxy path was used, without changing args/name.
     try:
         if isinstance(ret, dict):
-            ret["name"] = "supabase_select_proxy"
-            ret["args"] = {
-                "table": table,
-                "filter_key": filter_key,
-                "filter_value": filter_value,
-                "limit": limit,
-            }
             meta = ret.get("meta") or {}
-            meta["proxy_for"] = "supabase_select"
+            meta.setdefault("proxy_for", "supabase_select_proxy")
+            # Optionally capture the flat proxy inputs
+            meta.setdefault(
+                "proxy_args",
+                {"filter_key": filter_key, "filter_value": filter_value},
+            )
             ret["meta"] = meta
     except Exception:
-        # If anything goes wrong adjusting the envelope, return the original
-        return ret
+        pass
     return ret
 
 

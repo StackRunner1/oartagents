@@ -16,6 +16,17 @@ from .core.models.event import Event
 from .core.store.memory_store import store
 from .tools import tool_registry
 
+# Optional: import tracing context manager from Agents SDK; fallback to no-op
+try:  # pragma: no cover - import is runtime-optional
+    from agents import trace  # type: ignore
+except Exception:  # pragma: no cover
+    from contextlib import contextmanager
+
+    @contextmanager
+    def trace(_workflow_name: str, **_kwargs):  # type: ignore
+        yield
+
+
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
@@ -321,127 +332,140 @@ async def sdk_session_message(req: SDKSessionMessageRequest):
         final_result: dict | None = None
         hops = 0
 
-        while True:
-            # Prevent trivial loops
-            if cur_agent in visited:
-                break
-            visited.add(cur_agent)
-
-            # Run the turn for the current agent
-            turn_spec = {**agent_spec, "name": cur_agent}
-            # Record the last sequence before the run to scope event inspection to this hop
-            try:
-                evs_pre = store.list_events(req.session_id)
-                last_seq_before = evs_pre[-1].seq if evs_pre else 0
-            except Exception:
-                last_seq_before = 0
-
-            async def _sdk_path():
-                return await sdk_manager.run_agent_turn(
-                    session_id=req.session_id,
-                    user_input=req.user_input,
-                    agent_spec=turn_spec,
-                    scenario_id=req.scenario_id,
-                )
-
-            try:
-                result = await asyncio.wait_for(_sdk_path(), timeout=20.0)
-            except asyncio.TimeoutError:
-                try:
-                    seqt = store.next_seq(req.session_id)
-                    store.append_event(
-                        req.session_id,
-                        Event(
-                            session_id=req.session_id,
-                            seq=seqt,
-                            type="log",
-                            role="system",
-                            agent_id=cur_agent,
-                            text="turn_timeout",
-                            final=True,
-                            timestamp_ms=int(time.time() * 1000),
-                        ),
-                    )
-                except Exception:
-                    pass
-                result = {
-                    "final_output": "",
-                    "new_items_len": 0,
-                    "tool_calls": [],
-                    "used_tools": [],
-                    "usage": None,
-                    "used_fallback": False,
-                }
-
-            # Optionally emit concise tool_used
-            _emit_tool_used_from_result(result, cur_agent)
-
-            # Look for the most recent handoff_suggestion emitted during this hop
-            suggestion_target: str | None = None
-            try:
-                # Inspect only events emitted during this hop
-                recent = store.list_events(req.session_id, since_seq=last_seq_before)
-                for ev in reversed(recent):
-                    if ev.type == "handoff_suggestion":
-                        # Use data.agent_from if available; fallback to current
-                        data = getattr(ev, "data", None) or {}
-                        target = data.get("to_agent") or ev.agent_id
-                        if target and isinstance(target, str):
-                            suggestion_target = target
-                            break
-            except Exception:
-                suggestion_target = None
-
-            # If a handoff was suggested during this hop, apply it now so chips/graph reflect reality
-            if suggestion_target and suggestion_target != cur_agent:
-                # Auto-apply handoff and continue
-                try:
-                    prev = cur_agent
-                    store.set_active_agent(req.session_id, suggestion_target)
-                    cur_agent = suggestion_target
-                    seqh = store.next_seq(req.session_id)
-                    store.append_event(
-                        req.session_id,
-                        Event(
-                            session_id=req.session_id,
-                            seq=seqh,
-                            type="handoff",
-                            role="system",
-                            agent_id=suggestion_target,
-                            text=f"Handoff {prev} -> {suggestion_target}",
-                            final=True,
-                            reason="llm_auto_apply",
-                            timestamp_ms=int(time.time() * 1000),
-                            data={"from_agent": prev, "to_agent": suggestion_target},
-                        ),
-                    )
-                except Exception:
-                    # If we fail to handoff, break to avoid infinite loop
-                    final_result = result
+        # Higher-level trace to group all hops for this user message into a single trace
+        # Default tracing already wraps each Runner.run; this groups them under one turn-level trace
+        trace_metadata = {
+            "scenario": req.scenario_id,
+            "client_message_id": req.client_message_id,
+            "starting_agent": cur_agent,
+        }
+        with trace("OART Chat Turn", group_id=req.session_id, metadata=trace_metadata):
+            while True:
+                # Prevent trivial loops
+                if cur_agent in visited:
                     break
+                visited.add(cur_agent)
 
-                # If we already have an assistant output, we can finish now; otherwise, optionally chain
+                # Run the turn for the current agent
+                turn_spec = {**agent_spec, "name": cur_agent}
+                # Record the last sequence before the run to scope event inspection to this hop
+                try:
+                    evs_pre = store.list_events(req.session_id)
+                    last_seq_before = evs_pre[-1].seq if evs_pre else 0
+                except Exception:
+                    last_seq_before = 0
+
+                async def _sdk_path():
+                    return await sdk_manager.run_agent_turn(
+                        session_id=req.session_id,
+                        user_input=req.user_input,
+                        agent_spec=turn_spec,
+                        scenario_id=req.scenario_id,
+                    )
+
+                try:
+                    result = await asyncio.wait_for(_sdk_path(), timeout=20.0)
+                except asyncio.TimeoutError:
+                    try:
+                        seqt = store.next_seq(req.session_id)
+                        store.append_event(
+                            req.session_id,
+                            Event(
+                                session_id=req.session_id,
+                                seq=seqt,
+                                type="log",
+                                role="system",
+                                agent_id=cur_agent,
+                                text="turn_timeout",
+                                final=True,
+                                timestamp_ms=int(time.time() * 1000),
+                            ),
+                        )
+                    except Exception:
+                        pass
+                    result = {
+                        "final_output": "",
+                        "new_items_len": 0,
+                        "tool_calls": [],
+                        "used_tools": [],
+                        "usage": None,
+                        "used_fallback": False,
+                    }
+
+                # Optionally emit concise tool_used
+                _emit_tool_used_from_result(result, cur_agent)
+
+                # Look for the most recent handoff_suggestion emitted during this hop
+                suggestion_target: str | None = None
+                try:
+                    # Inspect only events emitted during this hop
+                    recent = store.list_events(
+                        req.session_id, since_seq=last_seq_before
+                    )
+                    for ev in reversed(recent):
+                        if ev.type == "handoff_suggestion":
+                            # Use data.agent_from if available; fallback to current
+                            data = getattr(ev, "data", None) or {}
+                            target = data.get("to_agent") or ev.agent_id
+                            if target and isinstance(target, str):
+                                suggestion_target = target
+                                break
+                except Exception:
+                    suggestion_target = None
+
+                # If a handoff was suggested during this hop, apply it now so chips/graph reflect reality
+                if suggestion_target and suggestion_target != cur_agent:
+                    # Auto-apply handoff and continue
+                    try:
+                        prev = cur_agent
+                        store.set_active_agent(req.session_id, suggestion_target)
+                        cur_agent = suggestion_target
+                        seqh = store.next_seq(req.session_id)
+                        store.append_event(
+                            req.session_id,
+                            Event(
+                                session_id=req.session_id,
+                                seq=seqh,
+                                type="handoff",
+                                role="system",
+                                agent_id=suggestion_target,
+                                text=f"Handoff {prev} -> {suggestion_target}",
+                                final=True,
+                                reason="llm_auto_apply",
+                                timestamp_ms=int(time.time() * 1000),
+                                data={
+                                    "from_agent": prev,
+                                    "to_agent": suggestion_target,
+                                },
+                            ),
+                        )
+                    except Exception:
+                        # If we fail to handoff, break to avoid infinite loop
+                        final_result = result
+                        break
+
+                    # If we already have an assistant output, we can finish now; otherwise, optionally chain
+                    if (result.get("final_output") or "").strip():
+                        final_result = result
+                        break
+                    # If auto chaining is off, stop after applying the handoff
+                    if not auto_chain:
+                        final_result = result
+                        break
+                    hops += 1
+                    if hops >= MAX_HOPS:
+                        final_result = result
+                        break
+                    # Continue loop to run the new agent
+                    continue
+
+                # No suggestion: decide based on assistant output
                 if (result.get("final_output") or "").strip():
                     final_result = result
                     break
-                # If auto chaining is off, stop after applying the handoff
-                if not auto_chain:
-                    final_result = result
-                    break
-                hops += 1
-                if hops >= MAX_HOPS:
-                    final_result = result
-                    break
-                # Continue loop to run the new agent
-                continue
-
-            # No suggestion: decide based on assistant output
-            if (result.get("final_output") or "").strip():
+                # No output and no suggestion => stop
                 final_result = result
                 break
-            # No output and no suggestion => stop
-            final_result = result
-            break
 
         # If no final result yet, build an empty result skeleton
         result = final_result or {

@@ -25,8 +25,10 @@ _default_agents: List[AgentDefinition] = [
         name="general",
         model="gpt-5-mini",  # use a text-capable model for SDK runs; realtime model is for Realtime API only
         instructions=(
-            "General purpose assistant. If the user explicitly asks to speak to Sales or Support, call the handoff tool to that agent immediately and provide a short reason."
-            " When the user requests a summary of text or long content, call the summarizer agent tool and return the result concisely."
+            "General purpose assistant. Keep responses concise and actionable. "
+            "If the user explicitly asks to speak to Sales or Support, call the handoff tool to that agent immediately and include a short reason. "
+            "When the user requests a summary of text or long content, you MUST call the agent tool named 'summarizer_agent_tool' and return its result; do not write your own summary. "
+            "When the user asks for recent, real-time, or web-based information (e.g., stock price, weather, news, product availability), you MUST call 'WebSearchTool' to retrieve up-to-date information before answering. Do not answer from memory."
         ),
         voice="alloy",
         tools=["echo_context", "weather", "WebSearchTool"],

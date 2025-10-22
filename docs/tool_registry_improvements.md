@@ -63,7 +63,7 @@
 
 ### Phase 3 — Broaden demo tool surface (mock-only, no external systems)
 
-- [ ] Introduce mock data files
+- [x] Introduce mock data files
 
   - [x] `app_agents/data/catalog.json` (products with categories, price, tags,
         stock)
@@ -98,11 +98,11 @@
 
 ### Phase 4 — Frontend improvements (small and targeted)
 
-- [ ] Tool name reliability in UI
+- [x] Tool name reliability in UI
 
-  - [ ] Ensure FE reads name from `ev.tool_name`, `ev.data.tool_name`,
+  - [x] Ensure FE reads name from `ev.tool_name`, `ev.data.tool_name`,
         `ev.data.name` (already implemented).
-  - [ ] Acceptance: Tool Output card and in-chat “Used [tool]” show correct name
+  - [x] Acceptance: Tool Output card and in-chat “Used [tool]” show correct name
         in demos.
 
 - [x] Display executed args and recommended prompts
@@ -116,7 +116,7 @@ Link to official doc: https://openai.github.io/openai-agents-python/tracing/
 - [ ] Tool usage counts per session
   - [ ] Increment counts when tool_call emitted; display in Usage panel summary
         (e.g., “Tools called: 3”).
-  - [ ] Acceptance: Usage panel shows a nonzero tools counter after calls.
+  - [ ] Acceptance: Usage panel (in OA Dashboard!) shows a nonzero tools counter after calls.
 
 ### Phase 6 — Docs and guides
 
@@ -135,6 +135,8 @@ Link to official doc: https://openai.github.io/openai-agents-python/tracing/
 - [ ] New: `tool_registry_improvements.md` (this plan distilled)
   - [ ] Best practices, envelope spec, schema examples, test matrix.
   - [ ] Acceptance: Added and linked.
+
+
 
 ## Ideas to broaden demo tool coverage (while staying mock-only)
 
