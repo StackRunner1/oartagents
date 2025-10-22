@@ -1,0 +1,16 @@
+[
+  {
+    "project_id": "p-1",
+    "title": "Website Redesign",
+    "status": "active",
+    "owner": "pm-1",
+    "tasks": [
+      {
+        "id": "task-1",
+        "title": "Landing page",
+        "assignee": "dev-1",
+        "status": "todo"
+      }
+    ]
+  }
+]

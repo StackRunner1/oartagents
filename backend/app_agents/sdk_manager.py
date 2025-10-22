@@ -73,6 +73,7 @@ def _ensure_builtin_tools_loaded():
 ## Removed provider wrappers (LiteLLM, OpenAI Responses); SDK-only
 import time
 
+from . import mock_data as _mock
 from .core.models.event import Event
 from .core.store.memory_store import store
 from .registry import get_scenario
@@ -88,7 +89,27 @@ AGENT_TOOL_ROLE_ALLOWLIST: Dict[str, list[str]] = {
     # Example:
     # "summarizer": ["agents", "assistant", "supervisor"],
     # "sales": ["supervisor", "general", "agents"],
+    # Enable summarizer agent-tool broadly across cohorts; tighten later as needed
+    "summarizer": [
+        "assistant",
+        "general",
+        "sales",
+        "support",
+        "planner",
+        "estimator",
+        "agents",
+    ],
 }
+
+# Load mock data once when module is imported (idempotent)
+try:
+    import os
+
+    # Data folder is alongside this package: backend/app_agents/data
+    base = os.path.abspath(os.path.join(os.path.dirname(__file__), "data"))
+    _mock.load_all(base)
+except Exception:
+    pass
 
 
 class _MinimalSession:
@@ -354,10 +375,16 @@ def build_agent_network_for_viz(scenario_id: str, root_agent: str | None = None)
                 if not tgt:
                     continue
                 try:
+                    tool_name = f"{ad.name}_agent_tool"
+                    tool_desc = (
+                        "Summarizes provided text or recent conversation into concise key points or a TL;DR."
+                        if ad.name.lower() == "summarizer"
+                        else f"Call the {ad.name} agent for a subtask and return the result."
+                    )
                     extra_tools.append(
                         tgt.as_tool(
-                            tool_name=f"{ad.name}_agent_tool",
-                            tool_description=f"Call the {ad.name} agent for a subtask and return the result.",
+                            tool_name=tool_name,
+                            tool_description=tool_desc,
                             # Visualization: show all agent-tools
                             is_enabled=lambda *_args, **_kwargs: True,
                         )
@@ -390,10 +417,16 @@ def build_agent_network_for_viz(scenario_id: str, root_agent: str | None = None)
                     if tgt is None:
                         continue
                     try:
+                        tool_name = f"{ad.name}_agent_tool"
+                        tool_desc = (
+                            "Summarizes provided text or recent conversation into concise key points or a TL;DR."
+                            if ad.name.lower() == "summarizer"
+                            else f"Call the {ad.name} agent for a subtask and return the result."
+                        )
                         extra_tools2.append(
                             tgt.as_tool(
-                                tool_name=f"{ad.name}_agent_tool",
-                                tool_description=f"Call the {ad.name} agent for a subtask and return the result.",
+                                tool_name=tool_name,
+                                tool_description=tool_desc,
                                 is_enabled=lambda *_args, **_kwargs: True,
                             )
                         )
@@ -588,10 +621,16 @@ def build_agent_network_for_runtime(scenario_id: str, session_id: str | None = N
                         return True
 
                 try:
+                    tool_name = f"{ad.name}_agent_tool"
+                    tool_desc = (
+                        "Summarizes provided text or recent conversation into concise key points or a TL;DR."
+                        if ad.name.lower() == "summarizer"
+                        else f"Call the {ad.name} agent for a subtask and return the result."
+                    )
                     extra_tools.append(
                         tgt.as_tool(
-                            tool_name=f"{ad.name}_agent_tool",
-                            tool_description=f"Call the {ad.name} agent for a subtask and return the result.",
+                            tool_name=tool_name,
+                            tool_description=tool_desc,
                             is_enabled=_is_enabled,
                         )
                     )
@@ -634,10 +673,16 @@ def build_agent_network_for_runtime(scenario_id: str, session_id: str | None = N
                         return True
 
                 try:
+                    tool_name = f"{ad.name}_agent_tool"
+                    tool_desc = (
+                        "Summarizes provided text or recent conversation into concise key points or a TL;DR."
+                        if ad.name.lower() == "summarizer"
+                        else f"Call the {ad.name} agent for a subtask and return the result."
+                    )
                     extra_tools2.append(
                         tgt.as_tool(
-                            tool_name=f"{ad.name}_agent_tool",
-                            tool_description=f"Call the {ad.name} agent for a subtask and return the result.",
+                            tool_name=tool_name,
+                            tool_description=tool_desc,
                             is_enabled=_is_enabled_root,
                         )
                     )
@@ -752,9 +797,28 @@ async def create_agent_session(
     except Exception:
         pass
     prov = _build_model_provider(model)
+    # Best-effort: instantiate an Agent to validate model/tools; do not fail session creation
     if Agent is not None:
-        ms = ModelSettings(include_usage=True)
-        Agent(name=name, instructions=instr, model=prov, tools=tools, model_settings=ms)
+        try:
+            ms = (
+                ModelSettings(include_usage=True) if ModelSettings is not None else None
+            )
+        except Exception:
+            ms = None
+        try:
+            if ms is not None:
+                Agent(
+                    name=name,
+                    instructions=instr,
+                    model=prov,
+                    tools=tools,
+                    model_settings=ms,
+                )
+            else:
+                Agent(name=name, instructions=instr, model=prov, tools=tools)
+        except Exception:
+            # Ignore any Agent construction errors during session init
+            pass
     # Optionally run a priming turn (not required)
     return {
         "session_id": session_id,
@@ -860,10 +924,27 @@ async def run_agent_turn(
         }
     # Agents SDK path
     if runtime_agent is None:
-        ms = ModelSettings(include_usage=True)
-        agent = Agent(
-            name=name, instructions=instr, model=prov, tools=tools, model_settings=ms
-        )
+        # Create agent with optional ModelSettings; never raise on ModelSettings issues
+        try:
+            ms = (
+                ModelSettings(include_usage=True) if ModelSettings is not None else None
+            )
+        except Exception:
+            ms = None
+        try:
+            if ms is not None:
+                agent = Agent(
+                    name=name,
+                    instructions=instr,
+                    model=prov,
+                    tools=tools,
+                    model_settings=ms,
+                )
+            else:
+                agent = Agent(name=name, instructions=instr, model=prov, tools=tools)
+        except Exception:
+            # If Agent construction fails unexpectedly, surface as SDK error path below
+            raise
     else:
         agent = runtime_agent
     try:
@@ -952,10 +1033,20 @@ async def run_agent_turn(
                 text_out = None
                 extra: Dict[str, Any] = {}
                 recommended_prompts: list[str] | None = None
+                # Capture arguments if available for envelope args propagation
+                call_args = None
+                try:
+                    call_args = getattr(i, "args", None) or getattr(
+                        i, "tool_arguments", None
+                    )
+                except Exception:
+                    call_args = None
                 # First, check if the output already matches our ToolEnvelope contract
                 try:
                     if isinstance(tout, dict) and (
-                        "ok" in tout and "name" in tout and ("data" in tout or "args" in tout)
+                        "ok" in tout
+                        and "name" in tout
+                        and ("data" in tout or "args" in tout)
                     ):
                         # Use envelope fields directly
                         res_tool = tout.get("name") or res_tool
@@ -1041,6 +1132,45 @@ async def run_agent_turn(
                     data_payload["extra"] = extra
                 if recommended_prompts:
                     data_payload["recommended_prompts"] = recommended_prompts
+
+                # Build a standard ToolEnvelope for agent-as-tool outputs
+                try:
+                    if isinstance(res_tool, str) and res_tool.endswith("_agent_tool"):
+                        agent_name_part = res_tool[: -len("_agent_tool")]
+                        env_data: Dict[str, Any] = {}
+                        if isinstance(res_tool, str) and res_tool.lower().startswith(
+                            "summarizer_"
+                        ):
+                            env_data["summary"] = safe_text
+                        else:
+                            # Default agent-tool payload
+                            env_data["output"] = tout
+                        env_meta = {
+                            "agent_tool": agent_name_part,
+                            "from_agent": name,
+                            "tool_kind": "agent_as_tool",
+                        }
+                        envelope = {
+                            "ok": True,
+                            "name": res_tool,
+                            "args": call_args or {},
+                            "data": env_data,
+                            "meta": env_meta,
+                        }
+                        # Include recommended prompts; provide sensible defaults for summarizer
+                        if not recommended_prompts and res_tool.lower().startswith(
+                            "summarizer_"
+                        ):
+                            recommended_prompts = [
+                                "Shorter TL;DR",
+                                "Add key bullets",
+                                "Expand the most important point",
+                            ]
+                        if recommended_prompts:
+                            envelope["recommended_prompts"] = recommended_prompts
+                        data_payload["envelope"] = envelope
+                except Exception:
+                    pass
                 evr = Event(
                     session_id=session_id,
                     seq=seq,

@@ -1,0 +1,10 @@
+[
+  {
+    "order_id": "ord-1001",
+    "customer": { "name": "Jane" },
+    "items": [{ "id": "sku-1", "qty": 1 }],
+    "total": 49.99,
+    "status": "placed",
+    "created_at": "2025-10-01"
+  }
+]

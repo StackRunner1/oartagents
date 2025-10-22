@@ -1,0 +1,32 @@
+[
+  {
+    "id": "sku-1",
+    "name": "Widget Pro",
+    "category": "Widgets",
+    "brand": "Acme",
+    "price": 49.99,
+    "tags": ["pro"],
+    "stock": 12,
+    "rating": 4.5
+  },
+  {
+    "id": "sku-2",
+    "name": "Widget Mini",
+    "category": "Widgets",
+    "brand": "Acme",
+    "price": 19.99,
+    "tags": ["mini"],
+    "stock": 30,
+    "rating": 4.2
+  },
+  {
+    "id": "sku-3",
+    "name": "Widget Max",
+    "category": "Widgets",
+    "brand": "Acme",
+    "price": 89.99,
+    "tags": ["max"],
+    "stock": 5,
+    "rating": 4.7
+  }
+]
